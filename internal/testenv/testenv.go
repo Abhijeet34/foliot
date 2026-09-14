@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -90,7 +91,39 @@ func entries(dir string) ([]string, error) {
 // the exit code: m.Run's, or 1 when any root gained or lost an entry its user owns. Before the
 // tests run, every variable points into a package directory, so a test that forgot
 // Isolate still writes nowhere real; Isolate gives each test its own.
-func Main(m *testing.M) int { return run(m.Run, os.Stdout) }
+func Main(m *testing.M) int {
+	if os.Getenv(privateEnv) != "" {
+		return run(m.Run, os.Stdout)
+	}
+	return reexec()
+}
+
+// privateEnv marks the test binary re-executed by reexec.
+const privateEnv = "FOLIOT_TESTENV_PRIVATE_TMPDIR"
+
+// reexec runs this test binary again with TMPDIR at a directory no other process
+// knows. A shared TMPDIR churns with every process of the same user and no file
+// records which process made it, so a witness over it cannot attribute a change;
+// over a private one it can, and a path captured at init lands there.
+func reexec() int {
+	dir, err := os.MkdirTemp("", prefix+"tmpdir-")
+	if err != nil {
+		fmt.Println("witness:", err)
+		return 1
+	}
+	defer os.RemoveAll(dir)
+	cmd := exec.Command(os.Args[0], os.Args[1:]...)
+	cmd.Env = append(os.Environ(), "TMPDIR="+dir, privateEnv+"=1") // exec keeps the last duplicate
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() > 0 {
+			return ee.ExitCode()
+		}
+		fmt.Println("witness: re-exec:", err)
+		return 1
+	}
+	return 0
+}
 
 func run(tests func() int, out io.Writer) int {
 	roots, err := realRoots()

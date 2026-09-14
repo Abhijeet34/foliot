@@ -26,6 +26,11 @@ func TestPlantedLeak(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(initHome, "planted"), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
+	case "real-tmpdir":
+		Isolate(t)
+		if err := os.WriteFile(filepath.Join(initTmp, "planted"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	case "not-isolated":
 		if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), "planted"), nil, 0o600); err != nil {
 			t.Fatal(err)
@@ -84,6 +89,26 @@ func TestWitnessIgnoresEntriesAnotherUserOwns(t *testing.T) {
 	}
 }
 
+var initTmp = os.TempDir()
+
+// The tests run in the re-executed binary, whose TMPDIR from init onwards is a
+// directory holding nothing but this package's own entries.
+func TestTestsRunUnderAPrivateTmpdir(t *testing.T) {
+	Isolate(t)
+	if os.Getenv(privateEnv) == "" || !strings.HasPrefix(filepath.Base(initTmp), prefix+"tmpdir-") {
+		t.Fatalf("TMPDIR at init was %q with %s=%q, want a re-exec under a %stmpdir-* directory", initTmp, privateEnv, os.Getenv(privateEnv), prefix)
+	}
+	des, err := os.ReadDir(initTmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, de := range des {
+		if !strings.HasPrefix(de.Name(), prefix) {
+			t.Errorf("the private TMPDIR holds %q, which this package did not create", de.Name())
+		}
+	}
+}
+
 func TestWitnessRedOnWriteUnderRealRoot(t *testing.T) {
 	out, code := runPlanted(t, "real-root")
 	if code != 1 || !regexp.MustCompile(`var=HOME root=\S+ before=\d+ after=\d+ delta=1\n`).MatchString(out) ||
@@ -93,6 +118,13 @@ func TestWitnessRedOnWriteUnderRealRoot(t *testing.T) {
 	// The run's own tests passed; only the witness turned it red.
 	if !strings.Contains(out, "--- PASS: TestPlantedLeak") {
 		t.Fatalf("the planted test itself should pass:\n%s", out)
+	}
+}
+
+func TestWitnessRedOnWriteUnderTheTmpdirCapturedAtInit(t *testing.T) {
+	out, code := runPlanted(t, "real-tmpdir")
+	if code != 1 || !strings.Contains(out, `var=TMPDIR added=["planted"] removed=[]`) {
+		t.Fatalf("exit %d, want 1 naming the planted TMPDIR entry:\n%s", code, out)
 	}
 }
 
