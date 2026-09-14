@@ -183,7 +183,7 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 	if t != nil {
 		visible = t.VisibleCheck
 	}
-	files, more := checkFiles(checkDir, visible)
+	files, more := checkFiles(checkDir, visible, filepath.Dir(bench))
 	r.Refusals = append(refusals, more...)
 	if t == nil {
 		return r
@@ -461,7 +461,7 @@ func (c *checkout) sh(ctx context.Context, command string, env []string, timeout
 	defer f.Close()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = c.dir
-	cmd.Env = append(append(os.Environ(), "CI=true"), env...)
+	cmd.Env = append(append(environ(), "CI=true"), env...)
 	cmd.Stdout, cmd.Stderr = f, f
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
@@ -484,6 +484,17 @@ func (c *checkout) sh(ctx context.Context, command string, env []string, timeout
 		fmt.Fprintf(f, "\n%v\n", err)
 		return 125
 	}
+}
+
+// environ is the process environment without FOLIOT_HOME, so no step learns where the corpus is.
+func environ() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "FOLIOT_HOME=") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func (c *checkout) remove() { _ = os.RemoveAll(c.dir) }

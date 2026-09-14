@@ -152,6 +152,9 @@ func TestVerifyRefuses(t *testing.T) {
 		{"a check that tells the commits apart by sha", "names a pinned sha", func(f *fixture, _ *Manifest) {
 			f.check = "grep -q " + f.landed[:12] + " /dev/null\necho examined=1\n"
 		}},
+		{"a check that reads the corpus it is verified from", "reaches the corpus rather than the checkout", func(f *fixture, _ *Manifest) {
+			f.check = "test -d \"$FOLIOT_HOME/bench/repos\" || exit 1\necho examined=1\n"
+		}},
 		{"a check with a network call", "criterion 5", func(f *fixture, _ *Manifest) {
 			f.check = "curl -fsS https://example.com/answer | sh\n" + goodCheck
 		}},

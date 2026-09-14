@@ -183,8 +183,9 @@ func LoadTask(path string, m *Manifest) (*Task, []string) {
 }
 
 // checkFiles lists the hidden check's files and refuses a check that is missing, holds a
-// network call, or runs the visible suite (criteria 3 to 5).
-func checkFiles(dir, visibleCheck string) ([]string, []string) {
+// network call, runs the visible suite, or reaches back into <root>, where the mirrors and
+// task records would let it tell base from landed without testing either (criteria 3 to 5).
+func checkFiles(dir, visibleCheck, root string) ([]string, []string) {
 	var files, refusals []string
 	if fi, err := os.Stat(filepath.Join(dir, "check.sh")); err != nil || !fi.Mode().IsRegular() {
 		return nil, []string{fmt.Sprintf("criterion 3: no hidden check at %s", filepath.Join(dir, "check.sh"))}
@@ -207,6 +208,11 @@ func checkFiles(dir, visibleCheck string) ([]string, []string) {
 		}
 		if loc := networkRe.FindIndex(b); loc != nil {
 			refusals = append(refusals, fmt.Sprintf("criterion 5: %s reaches the network: %q", rel(dir, p), excerpt(string(b), loc)))
+		}
+		for _, s := range []string{root, "FOLIOT_HOME", "--git-dir", "GIT_DIR"} {
+			if s != "" && strings.Contains(string(b), s) {
+				refusals = append(refusals, fmt.Sprintf("criterion 3: %s names %q, which reaches the corpus rather than the checkout", rel(dir, p), s))
+			}
 		}
 		if v := strings.TrimSpace(visibleCheck); v != "" && strings.Contains(string(b), v) {
 			refusals = append(refusals, fmt.Sprintf("criterion 4: %s runs the visible check %q", rel(dir, p), v))
