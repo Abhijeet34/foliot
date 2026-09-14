@@ -3,29 +3,46 @@ package log
 import (
 	"encoding/json"
 	"slices"
+	"sort"
 )
 
-// BenchRun is bench.run's data (a5 section 2.3). BaseExit and LandedExit are the
-// hidden check's exit codes at base_sha and at landed_sha (a5 section 2.16).
+// BenchRun is bench.run's data (a5 section 2.3), written before the worker starts.
+// BaseExit and LandedExit are the hidden check's exit codes at base_sha and at
+// landed_sha (a5 section 2.16). LandedObjectExit is `git cat-file -e <landed_sha>`
+// in the worker's checkout, which is 1 exactly when the checkout is history-free.
 type BenchRun struct {
-	Corpus     string `json:"corpus"`
-	Task       string `json:"task"`
-	Class      string `json:"class"`
-	Arm        string `json:"arm"`
-	Adapter    string `json:"adapter"`
-	Gate       string `json:"gate"`
-	Repeat     int    `json:"repeat"`
-	Model      string `json:"model"`
-	Provider   string `json:"provider"`
-	Billing    string `json:"billing"`
-	BaseSHA    string `json:"base_sha"`
-	BaseExit   int    `json:"base_exit"`
-	LandedExit int    `json:"landed_exit"`
-	Benchmark  bool   `json:"benchmark"`
+	Corpus           string  `json:"corpus"`
+	CorpusSHA        string  `json:"corpus_sha"`
+	Task             string  `json:"task"`
+	Class            string  `json:"class"`
+	Arm              string  `json:"arm"`
+	Adapter          string  `json:"adapter"`
+	Gate             string  `json:"gate"`
+	Repeat           int     `json:"repeat"`
+	Model            string  `json:"model"`
+	Provider         string  `json:"provider"`
+	Billing          string  `json:"billing"`
+	BaseSHA          string  `json:"base_sha"`
+	BaseExit         int     `json:"base_exit"`
+	LandedExit       int     `json:"landed_exit"`
+	Benchmark        bool    `json:"benchmark"`
+	CapUSD           float64 `json:"cap_usd"`
+	IsolationProven  bool    `json:"isolation_proven"`
+	IsolationProbe   int64   `json:"isolation_probe"` // the seq of the bench.probe that proved it
+	HistoryFree      bool    `json:"history_free"`
+	LandedObjectExit int     `json:"landed_object_exit"`
+	ModelCutoff      string  `json:"model_cutoff"` // YYYY-MM, the vendor's training data cutoff
+	PublicSince      string  `json:"public_since"` // YYYY-MM-DD, the earliest the landed change could be public
+	Run              string  `json:"run"`          // the run's directory under <root>/bench/runs
+	// The repository's readings for the report's contamination header: readable with no
+	// credential, and its majority source language at base_sha.
+	Repository         string `json:"repository,omitempty"`
+	RepositoryPublic   *bool  `json:"repository_public,omitempty"`
+	RepositoryLanguage string `json:"repository_language,omitempty"`
 }
 
 // BenchVerdict is bench.verdict's data; Columns holds the per-run columns of a5
-// section 2.16 by name, of which the fold reads cost_usd.
+// section 2.16 by name, a null value being a reading whose control failed.
 type BenchVerdict struct {
 	Corpus     string         `json:"corpus"`
 	Task       string         `json:"task"`
@@ -34,6 +51,70 @@ type BenchVerdict struct {
 	Pass       bool           `json:"pass"`
 	FalseClaim bool           `json:"false_claim"`
 	Columns    map[string]any `json:"columns"`
+	CheckExit  int            `json:"check_exit"`
+	Examined   int            `json:"examined"`
+	// SymlinksSkipped counts worker symlinks not carried into the check's checkout.
+	SymlinksSkipped int      `json:"symlinks_skipped,omitempty"`
+	WeekUsed        *float64 `json:"week_used,omitempty"`
+	HarnessVersion  string   `json:"harness_version,omitempty"`
+	// CheckConfined is true when the hidden check, which runs the worker's code, ran under
+	// the platform's sandbox.
+	CheckConfined bool `json:"check_confined"`
+}
+
+// BenchProbe is bench.probe's data. Isolation is "sandbox" when the run profile was
+// written and "absent" when the probe ran without it, which only a red proof does.
+type BenchProbe struct {
+	Corpus     string   `json:"corpus"`
+	Task       string   `json:"task"`
+	Arm        string   `json:"arm"`
+	Model      string   `json:"model"`
+	Isolation  string   `json:"isolation"`
+	CheckLines int      `json:"check_lines"`
+	LinesSeen  int      `json:"lines_seen"`
+	Denials    int      `json:"denials"`
+	Attempts   int      `json:"attempts"`
+	DiffLines  int      `json:"diff_lines"` // lines only the landed change adds
+	DiffSeen   int      `json:"diff_seen"`
+	TokenSeen  bool     `json:"token_seen"`
+	Proven     bool     `json:"proven"`
+	CostUSD    *float64 `json:"cost_usd"`
+	Run        string   `json:"run"`
+}
+
+// BenchEstimate is bench.estimate's data: the measured mean cost per run per arm
+// over the tasks it ran, and the sweep cost projected from it.
+type BenchEstimate struct {
+	Corpus       string             `json:"corpus"`
+	Arms         []string           `json:"arms"`
+	Repeats      int                `json:"repeats"`
+	Tasks        []string           `json:"tasks"`
+	MeanCostUSD  map[string]float64 `json:"mean_cost_usd"`
+	ProjectedUSD float64            `json:"projected_usd"`
+	CorpusTasks  int                `json:"corpus_tasks"`
+}
+
+// BenchVerified is bench.verified's data.
+type BenchVerified struct {
+	Corpus     string `json:"corpus"`
+	CorpusSHA  string `json:"corpus_sha"`
+	Task       string `json:"task"`
+	BaseExit   int    `json:"base_exit"`
+	LandedExit int    `json:"landed_exit"`
+	Examined   int    `json:"examined"`
+}
+
+// Verified folds bench.verified by (corpus, corpus_sha, task); a later record replaces an
+// earlier one.
+func Verified(events []Event) map[[3]string]BenchVerified {
+	out := map[[3]string]BenchVerified{}
+	for _, e := range usable(events) {
+		var v BenchVerified
+		if e.Type == "bench.verified" && json.Unmarshal(e.Data, &v) == nil {
+			out[[3]string{v.Corpus, v.CorpusSHA, v.Task}] = v
+		}
+	}
+	return out
 }
 
 // State is the part of a5 section 2.4's derived state that P1's events produce.
@@ -42,12 +123,19 @@ type State struct {
 	Bench   map[string]map[string]BenchCell `json:"bench"` // [class][model]
 }
 
-// BenchCell is state.bench[class][model]. a5 section 2.4 also names spread, which
-// no document defines yet; it is left to the bench report that owns the columns.
+// BenchCell is state.bench[class][model]. Spread is computed by bench report, which
+// owns the columns.
 type BenchCell struct {
 	PassRate   float64  `json:"pass_rate"`
 	N          int      `json:"n"`
 	CostMedian *float64 `json:"cost_median"` // null when no verdict carried cost_usd
+}
+
+// RunRecord is one run with the verdict that ended it, nil while none has.
+type RunRecord struct {
+	Seq     int64
+	Run     BenchRun
+	Verdict *BenchVerdict
 }
 
 type runKey struct {
@@ -55,11 +143,9 @@ type runKey struct {
 	repeat            int
 }
 
-// Fold is the pure function from events to state: no clock, no randomness, no
-// filesystem (a5 section 2.1). It skips an event the catalogue refuses, an event
-// a log.quarantined names, and a verdict whose run it has not seen; a later
-// verdict for the same run replaces an earlier one.
-func Fold(events []Event) State {
+// usable yields the events a fold may read: those the catalogue accepts and no
+// log.quarantined names.
+func usable(events []Event) []Event {
 	quarantined := map[int64]bool{}
 	for _, e := range events {
 		var q struct{ Seq int64 }
@@ -67,30 +153,63 @@ func Fold(events []Event) State {
 			quarantined[q.Seq] = true
 		}
 	}
-	st := State{Bench: map[string]map[string]BenchCell{}}
-	runs := map[runKey]BenchRun{}
-	verdicts := map[runKey]BenchVerdict{}
+	var out []Event
 	for _, e := range events {
-		st.LastSeq = max(st.LastSeq, e.Seq)
-		if quarantined[e.Seq] || check(&e) != nil {
-			continue
+		if !quarantined[e.Seq] && check(&e) == nil {
+			out = append(out, e)
 		}
+	}
+	return out
+}
+
+// Runs folds the benchmark's runs: a later bench.run for the same (corpus, task, arm,
+// repeat) starts that run again and drops its earlier verdict, a verdict for a run not
+// seen is skipped, and a later verdict replaces an earlier one. Ordered by run seq.
+func Runs(events []Event) []RunRecord {
+	byKey := map[runKey]*RunRecord{}
+	for _, e := range usable(events) {
 		switch e.Type {
 		case "bench.run":
 			var r BenchRun
 			if json.Unmarshal(e.Data, &r) == nil {
-				runs[runKey{r.Corpus, r.Task, r.Arm, r.Repeat}] = r
+				byKey[runKey{r.Corpus, r.Task, r.Arm, r.Repeat}] = &RunRecord{Seq: e.Seq, Run: r}
 			}
 		case "bench.verdict":
 			var v BenchVerdict
 			if json.Unmarshal(e.Data, &v) != nil {
 				continue
 			}
-			k := runKey{v.Corpus, v.Task, v.Arm, v.Repeat}
-			if _, ok := runs[k]; ok {
-				verdicts[k] = v
+			if rec := byKey[runKey{v.Corpus, v.Task, v.Arm, v.Repeat}]; rec != nil {
+				rec.Verdict = &v
 			}
 		}
+	}
+	out := make([]RunRecord, 0, len(byKey))
+	for _, rec := range byKey {
+		out = append(out, *rec)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out
+}
+
+// Estimates folds every bench.estimate, oldest first.
+func Estimates(events []Event) []BenchEstimate {
+	var out []BenchEstimate
+	for _, e := range usable(events) {
+		var est BenchEstimate
+		if e.Type == "bench.estimate" && json.Unmarshal(e.Data, &est) == nil {
+			out = append(out, est)
+		}
+	}
+	return out
+}
+
+// Fold is the pure function from events to state: no clock, no randomness, no
+// filesystem (a5 section 2.1).
+func Fold(events []Event) State {
+	st := State{Bench: map[string]map[string]BenchCell{}}
+	for _, e := range events {
+		st.LastSeq = max(st.LastSeq, e.Seq)
 	}
 	// Counts and sorted costs do not depend on map order, so the state is stable.
 	type acc struct {
@@ -98,18 +217,21 @@ func Fold(events []Event) State {
 		costs   []float64
 	}
 	cells := map[[2]string]*acc{}
-	for k, v := range verdicts {
-		r := runs[k]
-		a := cells[[2]string{r.Class, r.Model}]
+	for _, rec := range Runs(events) {
+		if rec.Verdict == nil {
+			continue
+		}
+		k := [2]string{rec.Run.Class, rec.Run.Model}
+		a := cells[k]
 		if a == nil {
 			a = &acc{}
-			cells[[2]string{r.Class, r.Model}] = a
+			cells[k] = a
 		}
 		a.n++
-		if v.Pass {
+		if rec.Verdict.Pass {
 			a.pass++
 		}
-		if c, ok := v.Columns["cost_usd"].(float64); ok {
+		if c, ok := rec.Verdict.Columns["cost_usd"].(float64); ok {
 			a.costs = append(a.costs, c)
 		}
 	}

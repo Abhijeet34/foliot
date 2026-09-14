@@ -54,3 +54,28 @@ func TestFoldBenchState(t *testing.T) {
 		t.Fatalf("state with seq 8 quarantined\n%s\nwant\n%s", skipped, want)
 	}
 }
+
+func TestRunsRestartsARunAndDropsItsOldVerdict(t *testing.T) {
+	root := testenv.Isolate(t)
+	l, err := Open(root, clock(time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	for _, e := range []Entry{
+		run("v1", "t1", "defect", "small", 1),
+		verdict("v1", "t1", "small", 1, true, 1.0),
+		run("v1", "t1", "defect", "small", 1), // the same run started again
+		run("v1", "t2", "defect", "small", 1),
+		verdict("v1", "t2", "small", 1, false, 2.0),
+	} {
+		if _, err := l.Append(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evs, _ := Read(Path(root), 1)
+	runs := Runs(evs)
+	if len(runs) != 2 || runs[0].Seq != 3 || runs[0].Verdict != nil || runs[1].Seq != 4 || runs[1].Verdict == nil || runs[1].Verdict.Pass {
+		t.Fatalf("runs %+v", runs)
+	}
+}
