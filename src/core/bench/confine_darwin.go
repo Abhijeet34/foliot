@@ -10,10 +10,12 @@ import (
 const sandboxExec = "/usr/bin/sandbox-exec"
 
 // confineCheck wraps the hidden check's command, which executes the worker's code, in a
-// Seatbelt profile: it reads nothing under the denied paths but its own checkout, writes
-// only there, and reaches no host beyond this one. Without it, code a worker planted could
-// copy every task's check to a path the next run's sandbox leaves readable.
-func confineCheck(command, checkout string, denied []string) (string, bool) {
+// Seatbelt profile: it reads nothing under the denied paths but its own checkout and the
+// toolchain paths named in allowed, writes only to its checkout, and reaches no host beyond
+// this one. Without it, code a worker planted could copy every task's check to a path the
+// next run's sandbox leaves readable, or read the operator's real home the way the worker's
+// own run profile already denies it.
+func confineCheck(command, checkout string, allowed, denied []string) (string, bool) {
 	if !seatbeltWorks() {
 		return command, false
 	}
@@ -24,6 +26,9 @@ func confineCheck(command, checkout string, denied []string) (string, bool) {
 		fmt.Fprintf(&p, "(deny file-read* (subpath %s))", sbplString(RealPath(d)))
 	}
 	fmt.Fprintf(&p, "(allow file-read* (subpath %s))", sbplString(checkout))
+	for _, a := range allowed {
+		fmt.Fprintf(&p, "(allow file-read* (subpath %s))", sbplString(RealPath(a)))
+	}
 	// mktemp -d under sandbox-exec ignores TMPDIR and uses the per-user temp directory, so
 	// writes there are allowed; every worker's run profile denies reading it back.
 	fmt.Fprintf(&p, "(deny file-write*)(allow file-write* (subpath %s) (subpath %s) (literal \"/dev/null\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))", sbplString(checkout), sbplString(userTemp()))

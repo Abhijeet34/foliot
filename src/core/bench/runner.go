@@ -362,6 +362,14 @@ func (s *session) sweep(ctx context.Context, runs []plannedRun, tasks []*Task, b
 	if len(runs) == 0 {
 		return nil, refusef("the plan holds no runs")
 	}
+	// The probe below exercises one arm's adapter; every run in the sweep is then stamped
+	// IsolationProven against that one probe, so a second adapter in the same sweep would
+	// carry a false claim it never earned.
+	for _, r := range runs {
+		if r.arm.Adapter != runs[0].arm.Adapter {
+			return nil, refusef("arm %s uses adapter %s, but this sweep's isolation probe only proves adapter %s (arm %s): isolation_proven would be recorded false for %s's runs", r.arm.Name, r.arm.Adapter, runs[0].arm.Adapter, runs[0].arm.Name, r.arm.Name)
+		}
+	}
 	if err := s.verify(ctx, tasks); err != nil {
 		return nil, err
 	}
@@ -772,9 +780,11 @@ func (s *session) runCheck(ctx context.Context, mirror string, task *Task, sha s
 		return 0, 0, false, err
 	}
 	logPath := filepath.Join(logs, name+".log")
-	// The check needs the host's toolchain, so only the answer keys are denied here, not
-	// the whole home; writes are what keep a planted copy from reaching a later run.
-	command, confined := confineCheck("sh .bench-check/check.sh", co.dir, append([]string{s.Root}, s.profile.DenyRead...))
+	// The check runs the worker's own applied diff, so it gets at least the worker's own
+	// confinement: root and the real home denied whole, with only the checkout and the
+	// toolchain paths s.tool names (the same ones the worker's own run profile re-allows)
+	// read back.
+	command, confined := confineCheck("sh .bench-check/check.sh", co.dir, s.tool, append([]string{s.Root, s.realHome}, s.profile.DenyRead...))
 	if err := os.MkdirAll(filepath.Join(co.dir, ".tmp"), 0o700); err != nil {
 		return 0, 0, false, err
 	}

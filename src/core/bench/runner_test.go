@@ -261,7 +261,7 @@ func TestRunRefusesBeforeLaunching(t *testing.T) {
 
 func TestCheckPhaseConfinesPlantedCode(t *testing.T) {
 	r := newRunnerFixture(t)
-	if _, ok := confineCheck("true", t.TempDir(), nil); !ok {
+	if _, ok := confineCheck("true", t.TempDir(), nil, nil); !ok {
 		t.Skip("no working check confinement on this platform or inside this sandbox")
 	}
 	// Red first: the same payload, unconfined, copies the check out of the corpus.
@@ -274,7 +274,7 @@ func TestCheckPhaseConfinesPlantedCode(t *testing.T) {
 		os.Remove(filepath.Join(r.leak, "read"))
 		cmd := payload
 		if c.confined {
-			cmd, _ = confineCheck(payload, co, []string{r.root})
+			cmd, _ = confineCheck(payload, co, nil, []string{r.root})
 		}
 		exec.Command("sh", "-c", cmd).Run()
 		b, _ := os.ReadFile(filepath.Join(r.leak, "read"))
@@ -300,7 +300,7 @@ func TestControlRefusesAScoringEnvironmentTheLandedChangeCannotPass(t *testing.T
 	// The check passes verify's unconfined run but writes outside its checkout, which the
 	// confined scoring run denies: the control must catch it before any worker launches.
 	r := newRunnerFixture(t, "@CHECK@", goodCheck+"echo probe > '@OUTSIDE@/written' || exit 1\necho examined=1\n")
-	if _, ok := confineCheck("true", t.TempDir(), nil); !ok {
+	if _, ok := confineCheck("true", t.TempDir(), nil, nil); !ok {
 		t.Skip("no working check confinement on this platform or inside this sandbox")
 	}
 	err := Run(context.Background(), r.cfg, SweepOptions{Arms: "fixer", Repeats: 1, BudgetUSD: 5})
