@@ -94,6 +94,29 @@ type BenchEstimate struct {
 	CorpusTasks  int                `json:"corpus_tasks"`
 }
 
+// BenchVerified is bench.verified's data.
+type BenchVerified struct {
+	Corpus     string `json:"corpus"`
+	CorpusSHA  string `json:"corpus_sha"`
+	Task       string `json:"task"`
+	BaseExit   int    `json:"base_exit"`
+	LandedExit int    `json:"landed_exit"`
+	Examined   int    `json:"examined"`
+}
+
+// Verified folds bench.verified by (corpus, corpus_sha, task); a later record replaces an
+// earlier one.
+func Verified(events []Event) map[[3]string]BenchVerified {
+	out := map[[3]string]BenchVerified{}
+	for _, e := range usable(events) {
+		var v BenchVerified
+		if e.Type == "bench.verified" && json.Unmarshal(e.Data, &v) == nil {
+			out[[3]string{v.Corpus, v.CorpusSHA, v.Task}] = v
+		}
+	}
+	return out
+}
+
 // State is the part of a5 section 2.4's derived state that P1's events produce.
 type State struct {
 	LastSeq int64                           `json:"last_seq"`

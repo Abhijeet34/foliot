@@ -69,7 +69,7 @@ type session struct {
 	realHome string
 	path     string   // the worker's PATH
 	tool     []string // toolchain directories re-allowed inside the denial
-	verified map[string]Result
+	verified map[string]verifiedExits
 	corpSHA  string
 	repos    map[string]repoFacts
 	weekUsed *float64
@@ -87,7 +87,7 @@ func open(cfg Config) (*session, error) {
 	if cfg.Getenv == nil {
 		cfg.Getenv = os.Getenv
 	}
-	s := &session{Config: cfg, tasks: map[string]*Task{}, tokens: map[string]string{}, verified: map[string]Result{}, repos: map[string]repoFacts{}}
+	s := &session{Config: cfg, tasks: map[string]*Task{}, tokens: map[string]string{}, verified: map[string]verifiedExits{}, repos: map[string]repoFacts{}}
 	p, err := LoadProfile(cfg.Root, cfg.Adapters)
 	if err != nil {
 		return nil, err
@@ -167,28 +167,51 @@ func (s *session) selectTasks(ids []string) ([]*Task, error) {
 	return out, nil
 }
 
-// verify runs the corpus's own certification over the tasks a sweep will use: the base
-// and landed exit codes a5 section 2.16 records on bench.run come from here, at the
-// corpus sha that pins them.
+// verify certifies the tasks a sweep will use (a5 section 2.16): the base and landed exit
+// codes on bench.run come from here. A task already recorded as verified at the corpus's
+// current, clean HEAD is reused, since one task's verify is minutes of suite runs
+// (measured 2026-09-14: about 6 minutes) and the corpus has not changed since.
 func (s *session) verify(ctx context.Context, tasks []*Task) error {
-	var ids []string
-	for _, t := range tasks {
-		ids = append(ids, t.ID)
+	sha, dirty := corpusVersion(filepath.Join(s.Root, "bench"))
+	events, err := log.Read(log.Path(s.Root), 1)
+	if err != nil {
+		return err
 	}
-	fmt.Fprintf(s.Out, "verify: %d tasks of corpus %s\n", len(ids), s.Corpus)
-	sum, err := Verify(ctx, Options{Root: s.Root, Corpus: s.Corpus, Tasks: ids, Jobs: 2, Out: s.Out})
+	done := log.Verified(events)
+	var need []string
+	for _, t := range tasks {
+		if v, ok := done[[3]string{s.Corpus, sha, t.ID}]; ok && !dirty {
+			s.verified[t.ID] = verifiedExits{v.BaseExit, v.LandedExit}
+			continue
+		}
+		need = append(need, t.ID)
+	}
+	fmt.Fprintf(s.Out, "verify: corpus %s at %s: %d tasks reused from bench.verified, %d to verify\n", s.Corpus, sha, len(tasks)-len(need), len(need))
+	s.corpSHA = sha
+	if len(need) == 0 {
+		return nil
+	}
+	sum, err := Verify(ctx, Options{Root: s.Root, Corpus: s.Corpus, Tasks: need, Jobs: 2, Out: s.Out})
 	if err != nil {
 		return err
 	}
 	if !sum.Success() {
 		return refusef("corpus %s: %d of %d tasks refused by verify, %d corpus problems", s.Corpus, sum.Refused, sum.Examined, len(sum.Problems))
 	}
-	s.corpSHA = sum.CorpusSHA
+	if sum.CorpusSHA != sha {
+		return refusef("corpus %s moved from %s to %s during verify", s.Corpus, sha, sum.CorpusSHA)
+	}
 	for _, r := range sum.Results {
-		s.verified[r.ID] = r
+		s.verified[r.ID] = verifiedExits{r.Base, r.Landed}
+		v := log.BenchVerified{Corpus: s.Corpus, CorpusSHA: sha, Task: r.ID, BaseExit: r.Base, LandedExit: r.Landed, Examined: r.Examined}
+		if _, err := s.log.Append(log.Entry{Type: "bench.verified", Actor: "bench", Data: v}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
+
+type verifiedExits struct{ base, landed int }
 
 type plannedRun struct {
 	arm    Arm
@@ -602,7 +625,7 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 	run := log.BenchRun{
 		Corpus: s.Corpus, CorpusSHA: s.corpSHA, Task: task.ID, Class: task.Class, Arm: r.arm.Name,
 		Adapter: h.Name(), Gate: gateName, Repeat: r.repeat, Model: r.arm.Model, Provider: r.arm.Provider,
-		Billing: h.Billing(), BaseSHA: task.BaseSHA, BaseExit: v.Base, LandedExit: v.Landed, Benchmark: true,
+		Billing: h.Billing(), BaseSHA: task.BaseSHA, BaseExit: v.base, LandedExit: v.landed, Benchmark: true,
 		CapUSD: r.cap, IsolationProven: true, IsolationProbe: probeSeq,
 		HistoryFree: hist.Free(), LandedObjectExit: hist.LandedObjectExit,
 		ModelCutoff: r.arm.Cutoff, PublicSince: publicSince, Run: rel(s.Root, w.record),

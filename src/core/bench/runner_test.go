@@ -141,7 +141,7 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 	}
 	for _, rec := range runs {
 		run, v := rec.Run, rec.Verdict
-		if v == nil || !run.IsolationProven || run.IsolationProbe != 1 || !run.HistoryFree || run.LandedObjectExit != 1 ||
+		if v == nil || !run.IsolationProven || run.IsolationProbe != 2 || !run.HistoryFree || run.LandedObjectExit != 1 ||
 			run.ModelCutoff != "2026-01" || run.PublicSince == "" || run.CorpusSHA == "" || run.BaseExit == 0 || run.LandedExit != 0 ||
 			run.Adapter != "fake" || run.Provider != "test" || run.CapUSD != 1 {
 			t.Fatalf("run record lacks a reading: %+v verdict %+v", run, v)
@@ -187,6 +187,14 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 		if !strings.Contains(rep.String(), want) {
 			t.Errorf("report lacks %q", want)
 		}
+	}
+	// A second sweep at the same corpus sha reuses the recorded verification.
+	r.out.Reset()
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 10, CapUSD: 1}); err != nil {
+		t.Fatalf("second Run: %v\n%s", err, r.out)
+	}
+	if !strings.Contains(r.out.String(), "1 tasks reused from bench.verified, 0 to verify") || strings.Contains(r.out.String(), "task=calc-add class=defect") {
+		t.Fatalf("the second sweep verified again:\n%s", r.out)
 	}
 	rep.Reset()
 	err = Report(ReportOptions{Root: r.root, Corpus: "v1", Arms: []string{"idle", "ceiling"}, Out: &rep})

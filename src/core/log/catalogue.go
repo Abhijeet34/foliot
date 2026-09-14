@@ -29,6 +29,11 @@ var catalogue = map[string]entry{
 	"bench.verdict": {actor: "bench", required: []string{
 		"corpus", "task", "arm", "repeat", "pass", "false_claim", "columns", "check_exit", "examined",
 	}, durable: true},
+	// bench.verified is one task's corpus certification at a corpus sha; a sweep reuses it
+	// while the corpus HEAD is that sha and clean, instead of re-proving the task.
+	"bench.verified": {actor: "bench", required: []string{
+		"corpus", "corpus_sha", "task", "base_exit", "landed_exit", "examined",
+	}, durable: true},
 	// bench.probe is the isolation probe's reading; a sweep starts only after one
 	// with proven true in the same invocation (k3 section 1.3 item 1).
 	"bench.probe": {actor: "bench", required: []string{
