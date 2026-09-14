@@ -30,6 +30,14 @@ const usage = `usage:
                            print the state when both folds are byte-identical
   foliot bench corpus verify --corpus <name> [--task <id>]... [--jobs <n>]
                            certify a benchmark corpus against its six criteria
+  foliot bench run --corpus <name> --arms <list> --repeats <n> --budget-usd <usd>
+                           prove isolation, then run every arm over the corpus
+  foliot bench estimate --corpus <name> --arms <list> --repeats <n>
+                           run the first five tasks once per arm and project the sweep
+  foliot bench report --corpus <name> [--arms <list>] [--task <id>]...
+                           one row per arm and class with every column and its spread
+  foliot bench probe --corpus <name> --arm <arm> [--task <id>] [--without-isolation]
+                           ask an arm to print a hidden check and record what it saw
 
 <root> is $FOLIOT_HOME, an absolute path. A usage error exits 2.
 `
@@ -71,6 +79,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	case "bench":
 		if len(args) >= 3 && args[1] == "corpus" && args[2] == "verify" {
 			return corpusVerify(args[3:], getenv, stdout, stderr)
+		}
+		if len(args) >= 2 {
+			switch args[1] {
+			case "run", "estimate", "report", "probe":
+				return benchCommand(args[1], args[2:], getenv, stdout, stderr)
+			}
 		}
 	}
 	fmt.Fprintf(stderr, "foliot: unknown command %q\n%s", strings.Join(args, " "), usage)

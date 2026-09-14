@@ -34,6 +34,11 @@ type BenchRun struct {
 	ModelCutoff      string  `json:"model_cutoff"` // YYYY-MM, the vendor's training data cutoff
 	PublicSince      string  `json:"public_since"` // YYYY-MM-DD, the earliest the landed change could be public
 	Run              string  `json:"run"`          // the run's directory under <root>/bench/runs
+	// The repository's readings for the report's contamination header: readable with no
+	// credential, and its majority source language at base_sha.
+	Repository         string `json:"repository,omitempty"`
+	RepositoryPublic   *bool  `json:"repository_public,omitempty"`
+	RepositoryLanguage string `json:"repository_language,omitempty"`
 }
 
 // BenchVerdict is bench.verdict's data; Columns holds the per-run columns of a5
@@ -48,6 +53,10 @@ type BenchVerdict struct {
 	Columns    map[string]any `json:"columns"`
 	CheckExit  int            `json:"check_exit"`
 	Examined   int            `json:"examined"`
+	// SymlinksSkipped counts worker symlinks not carried into the check's checkout.
+	SymlinksSkipped int      `json:"symlinks_skipped,omitempty"`
+	WeekUsed        *float64 `json:"week_used,omitempty"`
+	HarnessVersion  string   `json:"harness_version,omitempty"`
 }
 
 // BenchProbe is bench.probe's data. Isolation is "sandbox" when the run profile was
