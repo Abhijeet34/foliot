@@ -82,6 +82,12 @@ func (a Adapter) Launch(l bench.Launch) (bench.Command, error) {
 func settings(iso *bench.Isolation, home string, uid int) ([]byte, error) {
 	profileDir := filepath.Join(home, ".claude")
 	tmp := tmpEntries("/private/tmp", uid)
+	// The sandbox matches real paths, so an unresolved denied entry such as one under
+	// /tmp (a symlink to /private/tmp on stock macOS) would silently never match.
+	denyRead := append(append(append([]string{}, iso.DenyRead...), "/private/var/folders"), tmp...)
+	for i, p := range denyRead {
+		denyRead[i] = bench.RealPath(p)
+	}
 	var rules []string
 	for _, p := range append(append([]string{}, iso.ToolDeny...), tmp...) {
 		rules = append(rules, "Read(/"+p+"/**)", "Edit(/"+p+"/**)")
@@ -99,7 +105,7 @@ func settings(iso *bench.Isolation, home string, uid int) ([]byte, error) {
 			"excludedCommands":         []string{},
 			"filesystem": map[string]any{
 				// /private/var/folders holds every macOS per-user temp directory.
-				"denyRead":   append(append(append([]string{}, iso.DenyRead...), "/private/var/folders"), tmp...),
+				"denyRead":   denyRead,
 				"allowRead":  iso.AllowRead,
 				"allowWrite": []string{iso.Run},
 				"denyWrite":  []string{profileDir},

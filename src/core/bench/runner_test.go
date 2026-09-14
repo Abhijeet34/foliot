@@ -85,13 +85,23 @@ type runnerFixture struct {
 func newRunnerFixture(t *testing.T, vars ...string) *runnerFixture {
 	f := newFixture(t)
 	dir := t.TempDir()
+	// A location a planted payload writes to, outside the checkout and outside <root>.
+	// It must sit outside the per-user temp directory too: confineCheck allow-lists that
+	// whole tree for mktemp -d (mktemp -d ignores TMPDIR even unconfined, ignoring even a
+	// TMPDIR pointed at the checkout), and t.TempDir() nests under it on stock macOS, so a
+	// deny-write assertion anchored there would pass by accident rather than by denial.
+	outside, err := os.MkdirTemp("/tmp", "foliot-bench-outside-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(outside) })
 	for i := 0; i+1 < len(vars); i += 2 {
 		if vars[i] == "@CHECK@" {
-			f.check = strings.ReplaceAll(vars[i+1], "@OUTSIDE@", dir)
+			f.check = strings.ReplaceAll(vars[i+1], "@OUTSIDE@", outside)
 		}
 	}
 	f.save(t, defaultManifest())
-	r := &runnerFixture{fixture: f, out: &bytes.Buffer{}, launches: filepath.Join(dir, "launches"), leak: filepath.Join(dir, "leak")}
+	r := &runnerFixture{fixture: f, out: &bytes.Buffer{}, launches: filepath.Join(dir, "launches"), leak: filepath.Join(outside, "leak")}
 	os.MkdirAll(r.leak, 0o755)
 	// Overrides come first: a replacer takes the first pair that matches.
 	pairs := append(vars, "@WEEK@", "0.2", "@COST@", "0.25", "@LAUNCHES@", r.launches, "@ROOT@", f.root, "@LEAK@", r.leak, "@LANDED@", f.landed)
