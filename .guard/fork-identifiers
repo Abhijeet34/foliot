@@ -1,0 +1,4 @@
+# Identifiers of the fork this project replaces (a5 section 2.18), read by scripts/tree-guard.sh.
+# One pattern line, then the files allowed to match it, one per line: <path> # <reason>
+pattern: fm-|FM_|crewmate|secondmate|firstmate|herdr|treehouse|kunchenguid
+scripts/tree-guard-test.sh # plants each identifier to prove the check fails
