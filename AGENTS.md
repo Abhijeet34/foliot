@@ -218,3 +218,10 @@ Every `orc` command the design corpus names, one line each; a command marked **d
 | `orc bench corpus verify --corpus v1`, `orc bench estimate`, `orc bench run`, `orc bench report` | the benchmark instrument | R9 to R17 |
 | `orc import --from tasks-axi <backlog.md> --verify` | import the previous queue and its holds | a5 §2.19 |
 | `orc update` | explicit update; refuses while a task is live | R75 |
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.
