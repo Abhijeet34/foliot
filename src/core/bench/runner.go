@@ -181,7 +181,8 @@ func (s *session) verify(ctx context.Context, tasks []*Task) error {
 	done := log.Verified(events)
 	var need []string
 	for _, t := range tasks {
-		if v, ok := done[[3]string{s.Corpus, sha, t.ID}]; ok && !dirty {
+		// A record without visible readings certified criterion 1 from one run, so it is not reused.
+		if v, ok := done[[3]string{s.Corpus, sha, t.ID}]; ok && !dirty && v.VisibleRuns >= 2 {
 			s.verified[t.ID] = verifiedExits{v.BaseExit, v.LandedExit}
 			continue
 		}
@@ -192,7 +193,7 @@ func (s *session) verify(ctx context.Context, tasks []*Task) error {
 	if len(need) == 0 {
 		return nil
 	}
-	sum, err := Verify(ctx, Options{Root: s.Root, Corpus: s.Corpus, Tasks: need, Jobs: 2, Out: s.Out})
+	sum, err := Verify(ctx, Options{Root: s.Root, Corpus: s.Corpus, Tasks: need, Jobs: 2, VisibleRuns: DefaultVisibleRuns, Out: s.Out})
 	if err != nil {
 		return err
 	}
@@ -204,12 +205,27 @@ func (s *session) verify(ctx context.Context, tasks []*Task) error {
 	}
 	for _, r := range sum.Results {
 		s.verified[r.ID] = verifiedExits{r.Base, r.Landed}
-		v := log.BenchVerified{Corpus: s.Corpus, CorpusSHA: sha, Task: r.ID, BaseExit: r.Base, LandedExit: r.Landed, Examined: r.Examined}
+		v := log.BenchVerified{Corpus: s.Corpus, CorpusSHA: sha, Task: r.ID, BaseExit: r.Base, LandedExit: r.Landed, Examined: r.Examined,
+			VisibleRuns: sum.VisibleRuns, CPUs: sum.CPUs, VisibleBase: r.VisibleBase.reading(), VisibleLanded: r.VisibleLanded.reading(),
+			AloneBase: r.AloneBase.alone(), AloneLanded: r.AloneLanded.alone(), LoadSensitive: r.LoadSensitive}
 		if _, err := s.log.Append(log.Entry{Type: "bench.verified", Actor: "bench", Data: v}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (r Runs) reading() log.VisibleReading {
+	return log.VisibleReading{Exits: r.Codes, LoadMax: r.LoadMax}
+}
+
+// alone is the reading of a re-run alone, nil when none ran.
+func (r Runs) alone() *log.VisibleReading {
+	if len(r.Codes) == 0 {
+		return nil
+	}
+	v := r.reading()
+	return &v
 }
 
 type verifiedExits struct{ base, landed int }

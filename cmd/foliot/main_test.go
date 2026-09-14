@@ -177,6 +177,7 @@ func TestCorpusVerifyExitCodes(t *testing.T) {
 		{"verify with a path for a corpus", "/unused", []string{"bench", "corpus", "verify", "--corpus", "../v1"}, 2, "plain name"},
 		{"verify with a stray argument", "/unused", []string{"bench", "corpus", "verify", "--corpus", "v1", "extra"}, 2, "unexpected argument"},
 		{"verify with --jobs 0", "/unused", []string{"bench", "corpus", "verify", "--corpus", "v1", "--jobs", "0"}, 2, "--jobs must be at least 1"},
+		{"verify with --visible-runs 1", "/unused", []string{"bench", "corpus", "verify", "--corpus", "v1", "--visible-runs", "1"}, 2, "--visible-runs must be at least 2"},
 		{"verify without FOLIOT_HOME", "", []string{"bench", "corpus", "verify", "--corpus", "v1"}, 2, "FOLIOT_HOME"},
 		{"verify over a missing corpus", empty, []string{"bench", "corpus", "verify", "--corpus", "v1"}, 1, "corpus.json"},
 		{"verify --help", "", []string{"bench", "corpus", "verify", "--help"}, 0, "usage: foliot bench corpus verify"},

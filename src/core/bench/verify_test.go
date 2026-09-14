@@ -9,8 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Abhijeet34/foliot/internal/testenv"
 )
@@ -21,6 +24,7 @@ func TestMain(m *testing.M) { os.Exit(testenv.Main(m)) }
 // whose corpus holds one task drawn from it.
 type fixture struct {
 	root, src    string
+	shared       string
 	base, landed string
 	task         Task
 	check        string
@@ -62,7 +66,10 @@ func newFixture(t *testing.T) *fixture {
 		t.Setenv(k, v)
 	}
 	dir := t.TempDir()
-	f := &fixture{root: filepath.Join(dir, "root"), src: filepath.Join(dir, "calc")}
+	f := &fixture{root: filepath.Join(dir, "root"), src: filepath.Join(dir, "calc"), shared: filepath.Join(dir, "shared")}
+	if err := os.Mkdir(f.shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	git(t, dir, "init", "--quiet", "--initial-branch=main", f.src)
 	write(t, filepath.Join(f.src, "lib.sh"), "add() { echo $(($1 - $2)); }\n")
 	// The visible suite reads the git index, as a real repository's suite may.
@@ -86,8 +93,26 @@ func newFixture(t *testing.T) *fixture {
 		History: History{Source: "archive.md", Item: "calc-add", Text: "- [x] calc-add - add subtracts " + pr},
 	}
 	f.check = goodCheck
+	// The machine's own load would decide whether a red is re-run; a test sets it.
+	f.setLoad(t, func() float64 { return 0 })
 	return f
 }
+
+func (f *fixture) setLoad(t *testing.T, load func() float64) {
+	t.Helper()
+	prev := loadAverage
+	loadAverage = func(context.Context) float64 { return load() }
+	t.Cleanup(func() { loadAverage = prev })
+}
+
+// startedRuns counts the visible runs a planted suite has begun, each of which claims the next
+// numbered directory under shared.
+func (f *fixture) startedRuns() int {
+	entries, _ := os.ReadDir(f.shared)
+	return len(entries)
+}
+
+const countRun = `i=0; until mkdir "$SHARED/$i" 2>/dev/null; do i=$((i+1)); done; `
 
 // save writes the corpus and commits it, so the corpus sha pins what is verified.
 func (f *fixture) save(t *testing.T, manifest Manifest) {
@@ -114,7 +139,7 @@ func defaultManifest() Manifest {
 func (f *fixture) verify(t *testing.T) (Summary, Result, string) {
 	t.Helper()
 	var out bytes.Buffer
-	s, err := Verify(context.Background(), Options{Root: f.root, Corpus: "v1", Jobs: 1, Out: &out})
+	s, err := Verify(context.Background(), Options{Root: f.root, Corpus: "v1", Jobs: 1, VisibleRuns: 2, Out: &out})
 	if err != nil {
 		t.Fatalf("Verify: %v\n%s", err, out.String())
 	}
@@ -131,10 +156,10 @@ func TestVerifyCertifiesARedThenGreenTask(t *testing.T) {
 	if !s.Success() || s.Examined != 1 || s.Classes["defect"] != 1 {
 		t.Fatalf("want success over 1 defect, got %+v\n%s", s, out)
 	}
-	if r.Base == 0 || r.Landed != 0 || r.Additions == 0 || r.Visible != 0 || r.Examined != 1 {
-		t.Fatalf("want base red, landed green, additions red, visible green, examined 1; got %+v", r)
+	if r.Base == 0 || r.Landed != 0 || r.Additions == 0 || len(r.VisibleBase.Codes) != 2 || r.VisibleBase.Red() != 0 || len(r.VisibleLanded.Codes) != 2 || r.VisibleBase.LoadMax < 0 || r.VisibleLanded.Red() != 0 || r.Examined != 1 {
+		t.Fatalf("want base red, landed green, additions red, visible green in 2 of 2 at base and landed, examined 1; got %+v", r)
 	}
-	for _, want := range []string{"task=calc-add class=defect base=1 landed=0 additions=1 visible_at_base=0 examined=1 verdict=ok", "examined=1 ok=1 refused=0 defect=1 feature=0 refactor=0 scope=full corpus_sha="} {
+	for _, want := range []string{"task=calc-add class=defect base=1 landed=0 additions=1 visible_red_at_base=0/2 load_at_base=", "examined=1 ok=1 refused=0 defect=1 feature=0 refactor=0 scope=full corpus_sha=", " visible_red_at_landed=0/2 load_at_landed=", " examined=1 verdict=ok", " jobs=1 visible_runs=2 cpus="} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -195,8 +220,23 @@ func TestVerifyRefuses(t *testing.T) {
 			f.task.PullRequest = "https://github.com/example/calc/pull/9"
 			f.task.History.Text += " " + f.task.PullRequest
 		}},
-		{"a visible suite red at base", "criterion 1: the visible check", func(f *fixture, _ *Manifest) {
+		{"a visible suite red at base", "criterion 1: the visible check `false` is red at base_sha: red in 2 of 2 concurrent runs", func(f *fixture, _ *Manifest) {
 			f.task.VisibleCheck = "false"
+		}},
+		// shared is a directory outside every clone, so concurrent copies of a planted suite can
+		// see each other, as copies of a real suite do through ports, /tmp paths and the CPU.
+		{"a visible suite that passes 1 run in 2", "is not deterministic, flake rate 0.50, at base_sha: red in 1 of 2 concurrent runs", func(f *fixture, _ *Manifest) {
+			f.task.VisibleCheck = `i=0; until mkdir "` + f.shared + `/$i" 2>/dev/null; do i=$((i+1)); done; [ $((i % 2)) = 0 ] && sh test.sh`
+		}},
+		{"a visible suite that fails only on its first run", "flake rate 0.50, at base_sha: red in 1 of 2", func(f *fixture, _ *Manifest) {
+			f.task.VisibleCheck = `mkdir "` + f.shared + `/ran" 2>/dev/null && exit 1; sh test.sh`
+		}},
+		{"a visible suite that fails only beside a copy of itself", "flake rate 0.50, at base_sha: red in 1 of 2", func(f *fixture, _ *Manifest) {
+			f.task.VisibleCheck = `mkdir "` + f.shared + `/lock" 2>/dev/null || exit 1; sleep 2; rmdir "` + f.shared + `/lock"; sh test.sh`
+		}},
+		{"a visible suite that hangs", "is red at base_sha: red in 2 of 2 concurrent runs, exit codes [124 124], load average up to ", func(f *fixture, _ *Manifest) {
+			f.task.VisibleCheck = "sleep 60"
+			visibleTimeout = 2 * time.Second
 		}},
 		{"a class count that differs from the manifest", "class feature: 0 tasks verified, 1 pre-registered", func(_ *fixture, m *Manifest) {
 			m.Classes["feature"] = 1
@@ -204,6 +244,7 @@ func TestVerifyRefuses(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			defer func(d time.Duration) { visibleTimeout = d }(visibleTimeout)
 			f := newFixture(t)
 			m := defaultManifest()
 			c.change(f, &m)
@@ -211,7 +252,7 @@ func TestVerifyRefuses(t *testing.T) {
 			f.task.RequestSHA256 = hex.EncodeToString(sum[:])
 			f.save(t, m)
 			var out bytes.Buffer
-			s, err := Verify(context.Background(), Options{Root: f.root, Corpus: "v1", Jobs: 1, Out: &out})
+			s, err := Verify(context.Background(), Options{Root: f.root, Corpus: "v1", Jobs: 1, VisibleRuns: 2, Out: &out})
 			if err != nil {
 				t.Fatalf("Verify: %v", err)
 			}
@@ -222,6 +263,59 @@ func TestVerifyRefuses(t *testing.T) {
 				t.Fatalf("output lacks %q:\n%s", c.want, out.String())
 			}
 		})
+	}
+}
+
+func TestVerifyGatesAVisibleRedOnTheLoad(t *testing.T) {
+	over := float64(runtime.NumCPU() + 1)
+	cases := []struct {
+		name, suite string
+		// load is the reading given the count of visible runs started so far; the first pass
+		// starts runs 0 to 3 (base, then landed) and a re-run alone starts run 4 onwards.
+		load  func(started int) float64
+		ok    bool
+		wants []string
+	}{
+		{"an overloaded red that is green alone is accepted as load sensitive", `[ "$i" -ge 2 ] && sh test.sh`,
+			func(n int) float64 { return map[bool]float64{true: over, false: 0}[n < 4] }, true,
+			[]string{"visible_red_at_base=2/2", "alone_red_at_base=0/2 alone_load_at_base=0.0", "alone_red_at_landed=- ", "load_sensitive=true", "verdict=rerun-alone", "verdict=ok"}},
+		{"an overloaded red that is red alone is refused", `false`,
+			func(n int) float64 { return map[bool]float64{true: over, false: 0}[n < 4] }, false,
+			[]string{"is red again at base_sha run alone: red in 2 of 2 concurrent runs", "after red in 2 of 2 concurrent runs, exit codes [1 1], load average up to " + strconv.FormatFloat(over, 'f', 1, 64), "is red again at landed_sha run alone"}},
+		{"a red under acceptable load is refused with no re-run", `false`,
+			func(int) float64 { return 0 }, false,
+			[]string{"is red at base_sha: red in 2 of 2 concurrent runs", "alone_red_at_base=- alone_load_at_base=- alone_red_at_landed=- alone_load_at_landed=- load_sensitive=false"}},
+		{"a red that stays overloaded alone is refused as inconclusive", `false`,
+			func(int) float64 { return over }, false,
+			[]string{"load stayed above the cpu count, so the reading is inconclusive and not certified"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			t.Setenv("SHARED", f.shared)
+			f.task.VisibleCheck = countRun + c.suite
+			f.setLoad(t, func() float64 { return c.load(f.startedRuns()) })
+			f.save(t, defaultManifest())
+			s, r, out := f.verify(t)
+			if s.Success() != c.ok {
+				t.Fatalf("want success %v, got %+v\n%s", c.ok, r, out)
+			}
+			for _, want := range c.wants {
+				if !strings.Contains(out, want) {
+					t.Errorf("output lacks %q:\n%s", want, out)
+				}
+			}
+			if c.load(0) == 0 && f.startedRuns() != 4 {
+				t.Errorf("a red under acceptable load re-ran: %d visible runs started, want 4 (2 at base, 2 at landed)", f.startedRuns())
+			}
+		})
+	}
+}
+
+func TestLoadAverageReadsThisMachine(t *testing.T) {
+	testenv.Isolate(t)
+	if l := loadAverage(context.Background()); l < 0 {
+		t.Fatalf("uptime gave no load average on this machine: %v", l)
 	}
 }
 
@@ -258,12 +352,21 @@ func TestVerifyRefusesZeroTasks(t *testing.T) {
 	}
 	git(t, filepath.Join(f.root, "bench"), "commit", "--quiet", "-am", "empty")
 	var out bytes.Buffer
-	s, err := Verify(context.Background(), Options{Root: f.root, Corpus: "v1", Jobs: 1, Out: &out})
+	s, err := Verify(context.Background(), Options{Root: f.root, Corpus: "v1", Jobs: 1, VisibleRuns: 2, Out: &out})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s.Success() || !strings.Contains(out.String(), "examined=0 is never a pass") {
 		t.Fatalf("want examined=0 refused:\n%s", out.String())
+	}
+}
+
+func TestVerifyRefusesOneVisibleRun(t *testing.T) {
+	f := newFixture(t)
+	f.save(t, defaultManifest())
+	_, err := Verify(context.Background(), Options{Root: f.root, Corpus: "v1", Jobs: 1, VisibleRuns: 1, Out: &bytes.Buffer{}})
+	if err == nil || !strings.Contains(err.Error(), "at least 2") {
+		t.Fatalf("want one visible run refused, got %v", err)
 	}
 }
 

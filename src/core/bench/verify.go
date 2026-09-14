@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,9 +20,8 @@ import (
 )
 
 const (
-	setupTimeout   = 10 * time.Minute
-	visibleTimeout = 30 * time.Minute
-	checkTimeout   = 10 * time.Minute
+	setupTimeout = 10 * time.Minute
+	checkTimeout = 10 * time.Minute
 	// A request line at least this long that the landed diff adds verbatim names the solution.
 	solutionLineMin = 24
 )
@@ -35,6 +35,17 @@ var checkEnv = []string{
 	"NO_PROXY=", "no_proxy=", "NODE_USE_ENV_PROXY=1", "npm_config_offline=true",
 }
 
+// DefaultVisibleRuns is two copies: the fewest that can disagree, and each copy is a full suite
+// of CPU. On 2026-09-14 a 3-copy g9 round went red in every copy or none (6 red of 36 runs), so
+// more copies of one round add little; the base and landed rounds are the second sample.
+const DefaultVisibleRuns = 2
+
+// visibleTimeout is a variable so a test can plant a hanging suite without waiting half an hour.
+var visibleTimeout = 30 * time.Minute
+
+// loadInterval is how often the load average is read while visible copies run.
+const loadInterval = 15 * time.Second
+
 var examinedRe = regexp.MustCompile(`^examined=([0-9]+)$`)
 
 // Options select what Verify examines.
@@ -43,29 +54,101 @@ type Options struct {
 	Corpus string   // the corpus name, e.g. v1
 	Tasks  []string // restrict to these ids; empty means the whole corpus
 	Jobs   int      // tasks verified at once
-	Out    io.Writer
+	// VisibleRuns is how many copies of the visible suite run at once at base_sha, and then
+	// at landed_sha; at least 2, since one run cannot tell a flaky suite from a green one.
+	VisibleRuns int
+	Out         io.Writer
 }
 
 // Result is one task's reading. An exit code of notRun means the step did not run.
 type Result struct {
-	ID, Class               string
-	Base, Landed, Additions int
-	Visible                 int
-	AdditionsSameAsBase     bool
-	Examined                int
-	Refusals                []string
+	ID, Class                  string
+	Base, Landed, Additions    int
+	VisibleBase, VisibleLanded Runs
+	// AloneBase and AloneLanded are the re-run of a sha whose red was read above the cpu count,
+	// with no other task beside it; LoadSensitive marks a task that was red only under load.
+	AloneBase, AloneLanded Runs
+	LoadSensitive          bool
+	pending                bool
+	AdditionsSameAsBase    bool
+	Examined               int
+	Refusals               []string
+}
+
+// Runs is one sha's visible-suite reading: the exit code of each concurrent copy, empty when
+// the suite did not run, and the highest one-minute load average read while the copies ran,
+// negative when no reading succeeded, so a red copy can be told from an overloaded machine.
+type Runs struct {
+	Codes   []int
+	LoadMax float64
+}
+
+// Red is how many copies exited non-zero; Red over len(Codes) is the observed flake rate when
+// it is neither 0 nor len(Codes).
+func (r Runs) Red() int {
+	n := 0
+	for _, rc := range r.Codes {
+		if rc != 0 {
+			n++
+		}
+	}
+	return n
+}
+
+func (r Runs) String() string {
+	if len(r.Codes) == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%d/%d", r.Red(), len(r.Codes))
+}
+
+func (r Runs) load() string {
+	switch {
+	case len(r.Codes) == 0:
+		return "-"
+	case r.LoadMax < 0:
+		return "unknown"
+	}
+	return strconv.FormatFloat(r.LoadMax, 'f', 1, 64)
+}
+
+var loadRe = regexp.MustCompile(`load averages?: *([0-9]+[.,][0-9]+)`)
+
+// overloaded is true only for a load reading above the cpu count; an unknown load excuses nothing.
+func (r Runs) overloaded() bool { return r.LoadMax > float64(runtime.NumCPU()) }
+
+func (r Runs) describe() string {
+	return fmt.Sprintf("red in %d of %d concurrent runs, exit codes %v, load average up to %s on %d cpus", r.Red(), len(r.Codes), r.Codes, r.load(), runtime.NumCPU())
+}
+
+// loadAverage reads the one-minute load average from uptime(1), which macOS and Linux both
+// print; -1 when it cannot be read. A variable so a test can set the machine's load.
+var loadAverage = func(ctx context.Context) float64 {
+	cmd := exec.CommandContext(ctx, "uptime")
+	cmd.Env = mergeEnv(os.Environ(), []string{"LC_ALL=C"})
+	out, err := cmd.Output()
+	m := loadRe.FindSubmatch(out)
+	if err != nil || m == nil {
+		return -1
+	}
+	v, err := strconv.ParseFloat(strings.ReplaceAll(string(m[1]), ",", "."), 64)
+	if err != nil {
+		return -1
+	}
+	return v
 }
 
 const notRun = -1000
 
 // Summary is the corpus reading Verify prints last.
 type Summary struct {
-	Examined, OK, Refused int
-	Classes               map[string]int
-	CorpusSHA             string
-	Dirty, Partial        bool
-	Problems              []string
-	Results               []Result
+	Examined, OK, Refused   int
+	Classes                 map[string]int
+	CorpusSHA               string
+	Dirty, Partial          bool
+	Jobs, VisibleRuns, CPUs int
+	Problems                []string
+	Results                 []Result
 }
 
 // Success is true only over a non-zero count with nothing refused (K7).
@@ -75,6 +158,9 @@ func (s Summary) Success() bool {
 
 // Verify checks every task of a corpus against the six criteria of a5 §2.16.
 func Verify(ctx context.Context, o Options) (Summary, error) {
+	if o.VisibleRuns < 2 {
+		return Summary{}, fmt.Errorf("visible runs is %d; one run cannot tell a flaky suite from a green one, so it must be at least 2", o.VisibleRuns)
+	}
 	bench := filepath.Join(o.Root, "bench")
 	corpusDir := filepath.Join(bench, "corpus", o.Corpus)
 	m, err := LoadManifest(filepath.Join(corpusDir, "corpus.json"))
@@ -85,7 +171,8 @@ func Verify(ctx context.Context, o Options) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	s := Summary{Classes: map[string]int{}}
+	jobs := max(1, o.Jobs)
+	s := Summary{Classes: map[string]int{}, Jobs: jobs, VisibleRuns: o.VisibleRuns, CPUs: runtime.NumCPU()}
 	if len(o.Tasks) > 0 {
 		known := map[string]bool{}
 		for _, id := range ids {
@@ -101,8 +188,8 @@ func Verify(ctx context.Context, o Options) (Summary, error) {
 	}
 	s.CorpusSHA, s.Dirty = corpusVersion(bench)
 
-	jobs := max(1, o.Jobs)
 	results := make([]Result, len(ids))
+	alone := make([]func(*Result), len(ids))
 	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
 	var outMu sync.Mutex
@@ -112,13 +199,21 @@ func Verify(ctx context.Context, o Options) (Summary, error) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = verifyTask(ctx, bench, corpusDir, m, id)
+			results[i], alone[i] = verifyTask(ctx, bench, corpusDir, m, id, o.VisibleRuns)
 			outMu.Lock()
 			printResult(o.Out, results[i], filepath.Join(bench, "verify", id))
 			outMu.Unlock()
 		}()
 	}
 	wg.Wait()
+	// A red read while the load exceeded the cpu count says as much about the machine as about
+	// the suite, so that sha is run again once every other task is done, one task at a time.
+	for i, rerun := range alone {
+		if rerun != nil {
+			rerun(&results[i])
+			printResult(o.Out, results[i], filepath.Join(bench, "verify", ids[i]))
+		}
+	}
 
 	for _, r := range results {
 		s.Examined++
@@ -175,8 +270,10 @@ func corpusVersion(bench string) (string, bool) {
 	return sha, err != nil || status != ""
 }
 
-func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id string) Result {
-	r := Result{ID: id, Base: notRun, Landed: notRun, Additions: notRun, Visible: notRun}
+// verifyTask returns the task's reading and, when a visible red was read under overload, the
+// re-run that decides it.
+func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id string, copies int) (Result, func(*Result)) {
+	r := Result{ID: id, Base: notRun, Landed: notRun, Additions: notRun}
 	t, refusals := LoadTask(filepath.Join(corpusDir, id, "task.json"), m)
 	checkDir := filepath.Join(bench, "checks", id)
 	visible := ""
@@ -186,7 +283,7 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 	files, more := checkFiles(checkDir, visible, filepath.Dir(bench))
 	r.Refusals = append(refusals, more...)
 	if t == nil {
-		return r
+		return r, nil
 	}
 	r.Class = t.Class
 	for _, f := range files {
@@ -201,7 +298,7 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 	mirror, err := ensureMirror(ctx, filepath.Join(bench, "repos"), t.Repository, t.BaseSHA, t.LandedSHA)
 	if err != nil {
 		r.Refusals = append(r.Refusals, "criterion 2: "+err.Error())
-		return r
+		return r, nil
 	}
 	r.Refusals = append(r.Refusals, historyRefusals(ctx, mirror, t, files)...)
 	added, err := addedPaths(ctx, mirror, t)
@@ -209,17 +306,17 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 		r.Refusals = append(r.Refusals, "criterion 3: "+err.Error())
 	}
 	if len(r.Refusals) > 0 {
-		return r
+		return r, nil
 	}
 
 	work := filepath.Join(bench, "verify", id)
 	if err := os.RemoveAll(work); err != nil {
 		r.Refusals = append(r.Refusals, err.Error())
-		return r
+		return r, nil
 	}
 	if err := os.MkdirAll(work, 0o755); err != nil {
 		r.Refusals = append(r.Refusals, err.Error())
-		return r
+		return r, nil
 	}
 	refuse := func(format string, a ...any) { r.Refusals = append(r.Refusals, fmt.Sprintf(format, a...)) }
 
@@ -264,28 +361,61 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 	} else if r.Additions = run("additions", t.BaseSHA, added); r.Additions == 0 {
 		refuse("criterion 3: the hidden check exits 0 on base_sha plus only the files the landed change adds, so it reads new files rather than testing the changed behaviour")
 	}
-	// The visible suite is the slowest step, so it runs last, only for a task nothing refused,
-	// in its own checkout that never held the check. It is a git clone, not an export, because
-	// a repository's own suite may read its index (git ls-files) and is red without one.
-	if len(r.Refusals) == 0 {
-		co, err := newClone(ctx, mirror, filepath.Join(work, "visible"), t.BaseSHA)
-		if err != nil {
-			refuse("criterion 1: visible checkout: %v", err)
-			return r
-		}
-		defer co.remove()
-		if strings.TrimSpace(t.Setup) != "" {
-			if rc := co.sh(ctx, t.Setup, nil, setupTimeout, filepath.Join(work, "visible-setup.log")); rc != 0 {
-				refuse("criterion 1: setup `%s` exited %d for the visible check", t.Setup, rc)
-				return r
-			}
-		}
-		log := filepath.Join(work, "visible-at-base.log")
-		if r.Visible = co.sh(ctx, t.VisibleCheck, nil, visibleTimeout, log); r.Visible != 0 {
-			refuse("criterion 1: the visible check `%s` exits %d at base_sha (log %s)", t.VisibleCheck, r.Visible, log)
+	// The visible suite is the slowest step, so it runs last, only for a task nothing refused.
+	if len(r.Refusals) > 0 {
+		return r, nil
+	}
+	type side struct {
+		phase, sha   string
+		under, alone func(*Result) *Runs
+	}
+	var overloaded []side
+	for _, p := range []side{
+		{"base", t.BaseSHA, func(r *Result) *Runs { return &r.VisibleBase }, func(r *Result) *Runs { return &r.AloneBase }},
+		{"landed", t.LandedSHA, func(r *Result) *Runs { return &r.VisibleLanded }, func(r *Result) *Runs { return &r.AloneLanded }},
+	} {
+		runs, why := visibleRuns(ctx, mirror, work, t, p.phase, p.sha, copies)
+		*p.under(&r) = runs
+		switch {
+		case why != "":
+			refuse("%s", why)
+		case runs.Red() > 0 && runs.overloaded():
+			overloaded = append(overloaded, p)
+		case runs.Red() > 0:
+			refuse("%s", visibleRefusal(t, p.phase, runs, work))
 		}
 	}
-	return r
+	if len(overloaded) == 0 || len(r.Refusals) > 0 {
+		return r, nil
+	}
+	r.pending = true
+	return r, func(r *Result) {
+		r.pending = false
+		for _, p := range overloaded {
+			runs, why := visibleRuns(ctx, mirror, work, t, p.phase+"-alone", p.sha, copies)
+			*p.alone(r) = runs
+			under := *p.under(r)
+			switch {
+			case why != "":
+				r.Refusals = append(r.Refusals, why)
+			case runs.Red() == 0:
+				r.LoadSensitive = true
+			case runs.overloaded():
+				r.Refusals = append(r.Refusals, fmt.Sprintf("criterion 1: the visible check `%s` is red again at %s_sha run alone and the load stayed above the cpu count, so the reading is inconclusive and not certified: alone %s, after %s beside other tasks", t.VisibleCheck, p.phase, runs.describe(), under.describe()))
+			default:
+				r.Refusals = append(r.Refusals, fmt.Sprintf("criterion 1: the visible check `%s` is red again at %s_sha run alone: %s, after %s beside other tasks (logs %s)", t.VisibleCheck, p.phase, runs.describe(), under.describe(), filepath.Join(work, "visible-"+p.phase+"-alone-<n>.log")))
+			}
+		}
+	}
+}
+
+// visibleRefusal names a red visible reading: red in every copy, or not deterministic.
+func visibleRefusal(t *Task, phase string, runs Runs, work string) string {
+	what := "is red"
+	if red := runs.Red(); red < len(runs.Codes) {
+		what = fmt.Sprintf("is not deterministic, flake rate %.2f,", float64(red)/float64(len(runs.Codes)))
+	}
+	return fmt.Sprintf("criterion 1: the visible check `%s` %s at %s_sha: %s (logs %s)", t.VisibleCheck, what, phase, runs.describe(), filepath.Join(work, "visible-"+phase+"-<n>.log"))
 }
 
 // historyRefusals checks criterion 2 (the landed change is the merged pull request, on the
@@ -413,6 +543,69 @@ func ensureMirror(ctx context.Context, repos, url string, shas ...string) (strin
 	return path, nil
 }
 
+// visibleRuns sets up one clone at sha, copies it n-1 times, and runs the visible suite in all n
+// copies at once, so every run shares the machine with n-1 copies of itself: a suite that is red
+// beside itself is not deterministic, and benchmark arms run beside each other. It returns the
+// reading, or why the copies could not be made. The clone is a git clone, not an export, because
+// a repository's own suite may read its index (git ls-files); setup runs once and the tree is
+// copied, since a copy of an installed tree costs seconds where each install costs a registry
+// round trip (hist: cp -R of a 129 MB treadle tree, 4.99 s).
+func visibleRuns(ctx context.Context, mirror, work string, t *Task, phase, sha string, n int) (Runs, string) {
+	dir := func(i int) string { return filepath.Join(work, fmt.Sprintf("visible-%s-%d", phase, i+1)) }
+	cos := make([]*checkout, n)
+	defer func() {
+		for _, co := range cos {
+			if co != nil {
+				co.remove()
+			}
+		}
+	}()
+	co, err := newClone(ctx, mirror, dir(0), sha)
+	if err != nil {
+		return Runs{}, fmt.Sprintf("criterion 1: visible checkout at %s_sha: %v", phase, err)
+	}
+	cos[0] = co
+	if strings.TrimSpace(t.Setup) != "" {
+		log := filepath.Join(work, fmt.Sprintf("visible-%s-setup.log", phase))
+		if rc := co.sh(ctx, t.Setup, nil, setupTimeout, log); rc != 0 {
+			return Runs{}, fmt.Sprintf("criterion 1: setup `%s` exited %d for the visible check at %s_sha (log %s)", t.Setup, rc, phase, log)
+		}
+	}
+	for i := 1; i < n; i++ {
+		// cp -R keeps symlinks as symlinks (node_modules/.bin), which copyDir does not.
+		if out, err := exec.CommandContext(ctx, "cp", "-R", dir(0), dir(i)).CombinedOutput(); err != nil {
+			return Runs{}, fmt.Sprintf("criterion 1: copying the visible checkout at %s_sha: %v: %s", phase, err, bytes.TrimSpace(out))
+		}
+		cos[i] = &checkout{dir: dir(i)}
+	}
+
+	runs := Runs{Codes: make([]int, n), LoadMax: loadAverage(ctx)}
+	stop, sampled := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(sampled)
+		tick := time.NewTicker(loadInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				runs.LoadMax = max(runs.LoadMax, loadAverage(ctx))
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			runs.Codes[i] = cos[i].sh(ctx, t.VisibleCheck, nil, visibleTimeout, filepath.Join(work, fmt.Sprintf("visible-%s-%d.log", phase, i+1)))
+		})
+	}
+	wg.Wait()
+	close(stop)
+	<-sampled
+	return runs, ""
+}
+
 type checkout struct{ dir string }
 
 func newClone(ctx context.Context, mirror, dir, sha string) (*checkout, error) {
@@ -436,17 +629,17 @@ func newCheckout(ctx context.Context, mirror, dir, sha string, overlay []change)
 		return nil, err
 	}
 	untar.Stdin = pipe
-	var stderr bytes.Buffer
-	archive.Stderr, untar.Stderr = &stderr, &stderr
+	var archiveErr, untarErr bytes.Buffer
+	archive.Stderr, untar.Stderr = &archiveErr, &untarErr
 	if err := untar.Start(); err != nil {
 		return nil, err
 	}
 	if err := archive.Run(); err != nil {
 		_ = untar.Wait()
-		return nil, fmt.Errorf("git archive %s: %v: %s", sha, err, stderr.String())
+		return nil, fmt.Errorf("git archive %s: %v: %s", sha, err, archiveErr.String())
 	}
 	if err := untar.Wait(); err != nil {
-		return nil, fmt.Errorf("tar: %v: %s", err, stderr.String())
+		return nil, fmt.Errorf("tar: %v: %s", err, untarErr.String())
 	}
 	for _, c := range overlay {
 		p := filepath.Join(dir, filepath.FromSlash(c.path))
@@ -585,15 +778,19 @@ func code(rc int) string {
 
 func printResult(w io.Writer, r Result, logs string) {
 	verdict := "ok"
-	if len(r.Refusals) > 0 {
+	switch {
+	case len(r.Refusals) > 0:
 		verdict = "REFUSED"
+	case r.pending:
+		verdict = "rerun-alone"
 	}
 	additions := code(r.Additions)
 	if r.AdditionsSameAsBase {
 		additions = "same-as-base"
 	}
-	fmt.Fprintf(w, "task=%s class=%s base=%s landed=%s additions=%s visible_at_base=%s examined=%d verdict=%s logs=%s\n",
-		r.ID, r.Class, code(r.Base), code(r.Landed), additions, code(r.Visible), r.Examined, verdict, logs)
+	fmt.Fprintf(w, "task=%s class=%s base=%s landed=%s additions=%s visible_red_at_base=%s load_at_base=%s visible_red_at_landed=%s load_at_landed=%s alone_red_at_base=%s alone_load_at_base=%s alone_red_at_landed=%s alone_load_at_landed=%s load_sensitive=%t examined=%d verdict=%s logs=%s\n",
+		r.ID, r.Class, code(r.Base), code(r.Landed), additions, r.VisibleBase, r.VisibleBase.load(), r.VisibleLanded, r.VisibleLanded.load(),
+		r.AloneBase, r.AloneBase.load(), r.AloneLanded, r.AloneLanded.load(), r.LoadSensitive, r.Examined, verdict, logs)
 	for _, why := range r.Refusals {
 		fmt.Fprintf(w, "  refused: %s\n", why)
 	}
@@ -612,8 +809,8 @@ func printSummary(w io.Writer, s Summary) {
 	if s.Dirty {
 		dirty = "+uncommitted"
 	}
-	fmt.Fprintf(w, "examined=%d ok=%d refused=%d %s scope=%s corpus_sha=%s%s\n",
-		s.Examined, s.OK, s.Refused, strings.Join(classes, " "), scope, s.CorpusSHA, dirty)
+	fmt.Fprintf(w, "examined=%d ok=%d refused=%d %s scope=%s corpus_sha=%s%s jobs=%d visible_runs=%d cpus=%d\n",
+		s.Examined, s.OK, s.Refused, strings.Join(classes, " "), scope, s.CorpusSHA, dirty, s.Jobs, s.VisibleRuns, s.CPUs)
 	for _, p := range s.Problems {
 		fmt.Fprintf(w, "refused: %s\n", p)
 	}

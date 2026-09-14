@@ -29,7 +29,7 @@ const usage = `usage:
   foliot                   print the version
   foliot replay --verify   verify <root>/log/events.jsonl, fold it twice and
                            print the state when both folds are byte-identical
-  foliot bench corpus verify --corpus <name> [--task <id>]... [--jobs <n>]
+  foliot bench corpus verify --corpus <name> [--task <id>]... [--jobs <n>] [--visible-runs <n>]
                            certify a benchmark corpus against its six criteria
   foliot bench run --corpus <name> --arms <list> --repeats <n> --budget-usd <usd>
                            prove isolation, then run every arm over the corpus
@@ -43,13 +43,18 @@ const usage = `usage:
 <root> is $FOLIOT_HOME, an absolute path. A usage error exits 2.
 `
 
-const verifyUsage = `usage: foliot bench corpus verify --corpus <name> [--task <id>]... [--jobs <n>]
+const verifyUsage = `usage: foliot bench corpus verify --corpus <name> [--task <id>]... [--jobs <n>] [--visible-runs <n>]
 
 Checks every task of <root>/bench/corpus/<name> against the six corpus criteria:
 the hidden check <root>/bench/checks/<task>/check.sh must exit non-zero in a fresh
 checkout at base_sha and at base_sha plus only the files the landed change adds, exit 0
-at landed_sha with examined=<n> as its last line, and the visible check must pass at
-base_sha. Prints one line per task, then examined=<n> with per-class counts.
+at landed_sha with examined=<n> as its last line, and the visible check must pass in every
+one of --visible-runs copies (default 2, at least 2) run at once in fresh clones at base_sha,
+and again at landed_sha; one red copy refuses the task. A red read while the one-minute
+load average exceeds the cpu count is run again alone after every other task, and refuses
+only if it is red again; green alone, the task passes marked load_sensitive=true. --jobs
+tasks (default 2) are verified at once. Prints one line per task with the red count and
+load of each visible reading, then examined=<n> with per-class counts.
 <root> is $FOLIOT_HOME, an absolute path.
 
 Exit: 0 every examined task passed over a non-zero count; 1 a refusal; 2 usage.
@@ -146,6 +151,7 @@ func corpusVerify(args []string, getenv func(string) string, stdout, stderr io.W
 	fs.SetOutput(io.Discard)
 	corpus := fs.String("corpus", "", "")
 	jobs := fs.Int("jobs", 2, "")
+	visibleRuns := fs.Int("visible-runs", bench.DefaultVisibleRuns, "")
 	var tasks repeated
 	fs.Var(&tasks, "task", "")
 	usageError := func(msg string) int {
@@ -165,6 +171,8 @@ func corpusVerify(args []string, getenv func(string) string, stdout, stderr io.W
 		return usageError("--corpus <name> is required and is a plain name")
 	case *jobs < 1:
 		return usageError("--jobs must be at least 1")
+	case *visibleRuns < 2:
+		return usageError("--visible-runs must be at least 2, since one run cannot tell a flaky suite from a green one")
 	}
 	root, err := log.Root(getenv)
 	if err != nil {
@@ -172,7 +180,7 @@ func corpusVerify(args []string, getenv func(string) string, stdout, stderr io.W
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	s, err := bench.Verify(ctx, bench.Options{Root: root, Corpus: *corpus, Tasks: tasks, Jobs: *jobs, Out: stdout})
+	s, err := bench.Verify(ctx, bench.Options{Root: root, Corpus: *corpus, Tasks: tasks, Jobs: *jobs, VisibleRuns: *visibleRuns, Out: stdout})
 	if err != nil {
 		fmt.Fprintln(stderr, "foliot bench corpus verify:", err)
 		return 1

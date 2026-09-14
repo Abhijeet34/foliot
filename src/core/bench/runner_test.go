@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Abhijeet34/foliot/internal/testenv"
 	"github.com/Abhijeet34/foliot/src/core/log"
@@ -151,6 +152,13 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var verified log.BenchVerified
+	for _, v := range log.Verified(events) {
+		verified = v
+	}
+	if verified.VisibleRuns != DefaultVisibleRuns || verified.CPUs < 1 || len(verified.VisibleBase.Exits) != 2 || len(verified.VisibleLanded.Exits) != 2 || verified.AloneBase != nil || verified.LoadSensitive {
+		t.Fatalf("bench.verified lacks its visible readings: %+v", verified)
+	}
 	runs := log.Runs(events)
 	if len(runs) != 2 {
 		t.Fatalf("want 2 run records, got %d", len(runs))
@@ -211,6 +219,24 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 	}
 	if !strings.Contains(r.out.String(), "1 tasks reused from bench.verified, 0 to verify") || strings.Contains(r.out.String(), "task=calc-add class=defect") {
 		t.Fatalf("the second sweep verified again:\n%s", r.out)
+	}
+	// A record without visible readings, as written before criterion 1 ran copies, is not reused.
+	l, err := log.Open(r.root, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := verified
+	old.VisibleRuns, old.VisibleBase, old.VisibleLanded = 0, log.VisibleReading{}, log.VisibleReading{}
+	if _, err := l.Append(log.Entry{Type: "bench.verified", Actor: "bench", Data: old}); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	r.out.Reset()
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 10, CapUSD: 1}); err != nil {
+		t.Fatalf("third Run: %v\n%s", err, r.out)
+	}
+	if !strings.Contains(r.out.String(), "0 tasks reused from bench.verified, 1 to verify") {
+		t.Fatalf("a sweep reused a record with no visible readings:\n%s", r.out)
 	}
 	rep.Reset()
 	err = Report(ReportOptions{Root: r.root, Corpus: "v1", Arms: []string{"idle", "ceiling"}, Out: &rep})

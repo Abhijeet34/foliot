@@ -102,6 +102,23 @@ type BenchVerified struct {
 	BaseExit   int    `json:"base_exit"`
 	LandedExit int    `json:"landed_exit"`
 	Examined   int    `json:"examined"`
+	// The visible-suite readings of criterion 1: VisibleRuns concurrent copies at each sha on
+	// a machine of CPUs, and the re-run alone of a sha whose red was read above the cpu count.
+	// A record written before these fields existed has VisibleRuns 0.
+	VisibleRuns   int             `json:"visible_runs"`
+	CPUs          int             `json:"cpus"`
+	VisibleBase   VisibleReading  `json:"visible_base"`
+	VisibleLanded VisibleReading  `json:"visible_landed"`
+	AloneBase     *VisibleReading `json:"alone_base,omitempty"`
+	AloneLanded   *VisibleReading `json:"alone_landed,omitempty"`
+	LoadSensitive bool            `json:"load_sensitive"`
+}
+
+// VisibleReading is one sha's visible-suite round: each copy's exit code and the highest
+// one-minute load average read while they ran, -1 when none was read.
+type VisibleReading struct {
+	Exits   []int   `json:"exits"`
+	LoadMax float64 `json:"load_max"`
 }
 
 // Verified folds bench.verified by (corpus, corpus_sha, task); a later record replaces an

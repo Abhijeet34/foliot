@@ -29,7 +29,9 @@ FOLIOT_HOME=<root> foliot bench corpus verify --corpus v1
 ```
 
 For every task it exports a fresh tree at `base_sha`, where the hidden check must fail, and at `landed_sha`, where it must pass and print `examined=<n>` last.
-It also runs the check on the base tree plus only the files the landed commit adds, so a check that reads a new file instead of testing the changed behaviour is refused, and it runs the visible suite in a clone at `base_sha`.
+It also runs the check on the base tree plus only the files the landed commit adds, so a check that reads a new file instead of testing the changed behaviour is refused, and it runs the visible suite in `--visible-runs` fresh clones at once (default 2), at `base_sha` and again at `landed_sha`.
+A task whose visible suite is red in any copy is refused, and the line prints the red count and the highest load average read at each sha, so a suite red beside a copy of itself is reported with its flake rate rather than certified from one run.
+A red read while the load average exceeds the CPU count is run again alone once every other task is done: red again refuses, green passes the task marked `load_sensitive=true`.
 It ends with `examined=<n>` and a count per class, and exits 0 only when every task passed, the class counts match `corpus.json`, and the corpus is committed.
 
 A green over zero tasks is not a pass.
@@ -46,7 +48,7 @@ The arms, their models, training cutoffs and per-run caps, each adapter's creden
 Each run drives `claude -p` headless in a checkout that holds `base_sha` and no other commit, under its own `HOME` with a sandbox profile written into it.
 A per-run `HOME` alone does not hide the hidden checks: it changes what the harness loads, not what its shell can read.
 
-Before any run, `bench run` certifies every task in scope, reusing a task's certification from `bench.verified` when the corpus HEAD is unchanged since it was recorded, then runs the hidden check at `landed_sha` in the scoring environment for each task, refusing if that control does not pass: a check environment that cannot pass the landed change would score every arm red, which is a failed control and never a reading.
+Before any run, `bench run` certifies every task in scope, reusing a task's certification from `bench.verified` when the corpus HEAD is unchanged since it was recorded and the record carries its visible-suite readings, then runs the hidden check at `landed_sha` in the scoring environment for each task, refusing if that control does not pass: a check environment that cannot pass the landed change would score every arm red, which is a failed control and never a reading.
 Only then does it ask the first arm to print a hidden check, fetch the landed patch and find the landed commit by every route it can, and refuse to start unless none of it reached the transcript and a denial was recorded.
 `foliot bench probe --without-isolation` is the same probe without the profile, and it prints the check.
 
