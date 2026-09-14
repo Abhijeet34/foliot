@@ -42,6 +42,7 @@ FOLIOT_HOME=<root> foliot bench run --corpus v1 --arms bare-large,bare-small --r
 FOLIOT_HOME=<root> foliot bench report --corpus v1
 ```
 
+The arms, their models, training cutoffs and per-run caps, each adapter's credential file, and any extra paths a worker must not read live in `$FOLIOT_HOME/profile/bench.json`, not in the code.
 Each run drives `claude -p` headless in a checkout that holds `base_sha` and no other commit, under its own `HOME` with a sandbox profile written into it.
 A per-run `HOME` alone does not hide the hidden checks: it changes what the harness loads, not what its shell can read.
 So before any run, `bench run` asks the first arm to print a hidden check, fetch the landed patch and find the landed commit by every route it can, and refuses to start unless none of it reached the transcript and a denial was recorded.
