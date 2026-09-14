@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -52,7 +53,10 @@ func realRoots() (map[string]string, error) {
 	return roots, nil
 }
 
-// entries lists a root's top-level names; a root that does not exist has none.
+// entries lists a root's top-level names that this process's user owns; a root
+// that does not exist has none. A test can neither create nor remove another
+// user's entry, and a shared /tmp churns with them: on a GitHub runner systemd
+// removed its root-owned systemd-private-* directory mid-run.
 func entries(dir string) ([]string, error) {
 	des, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -61,17 +65,29 @@ func entries(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	uid := os.Getuid()
 	var names []string
 	for _, de := range des {
-		if !strings.HasPrefix(de.Name(), prefix) {
-			names = append(names, de.Name())
+		if strings.HasPrefix(de.Name(), prefix) {
+			continue
 		}
+		fi, err := de.Info()
+		if os.IsNotExist(err) {
+			continue // removed between the listing and the stat
+		}
+		if err != nil {
+			return nil, err
+		}
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != uid {
+			continue
+		}
+		names = append(names, de.Name())
 	}
 	return names, nil
 }
 
 // Main runs a package's tests between two readings of every real root and returns
-// the exit code: m.Run's, or 1 when any root gained or lost an entry. Before the
+// the exit code: m.Run's, or 1 when any root gained or lost an entry its user owns. Before the
 // tests run, every variable points into a package directory, so a test that forgot
 // Isolate still writes nowhere real; Isolate gives each test its own.
 func Main(m *testing.M) int { return run(m.Run, os.Stdout) }

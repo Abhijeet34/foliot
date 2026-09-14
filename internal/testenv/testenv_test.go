@@ -38,10 +38,10 @@ func TestPlantedLeak(t *testing.T) {
 // runPlanted runs TestPlantedLeak in a subprocess whose "real" roots are
 // directories inside this test's own isolation, so the red case touches nothing
 // real either.
-func runPlanted(t *testing.T, mode string) (string, int) {
+func runPlanted(t *testing.T, mode string, env ...string) (string, int) {
 	base := Isolate(t)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestPlantedLeak$", "-test.v")
-	cmd.Env = append(os.Environ(), plant+"="+mode)
+	cmd.Env = append(append(os.Environ(), plant+"="+mode), env...) // exec keeps the last duplicate
 	out, err := cmd.CombinedOutput()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
@@ -67,6 +67,20 @@ func TestWitnessGreenWhenNothingLeaks(t *testing.T) {
 		if l[2] != "0" {
 			t.Fatalf("var=%s delta=%s, want 0:\n%s", l[1], l[2], out)
 		}
+	}
+}
+
+// On a GitHub runner, systemd removed its root-owned systemd-private-* directory
+// from the shared /tmp mid-run and the witness failed a passing package. A test
+// can only create or remove entries its own user owns, so only those count;
+// /usr stands in for a root holding nothing but another user's entries.
+func TestWitnessIgnoresEntriesAnotherUserOwns(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("as root every entry is the test's own")
+	}
+	out, code := runPlanted(t, "", "CODEX_HOME=/usr")
+	if code != 0 || !regexp.MustCompile(`var=CODEX_HOME root=/usr before=0 after=0 delta=0\n`).MatchString(out) {
+		t.Fatalf("exit %d, want 0 with /usr's root-owned entries uncounted:\n%s", code, out)
 	}
 }
 
