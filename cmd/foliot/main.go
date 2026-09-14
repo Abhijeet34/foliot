@@ -1,4 +1,4 @@
-// Command orc prints its version and nothing else yet; it exists so CI has a
+// Command foliot prints its version and nothing else yet; it exists so CI has a
 // binary to vet, test and build.
 package main
 
@@ -12,7 +12,7 @@ import (
 var version = "0.0.0-dev"
 
 func printVersion(w io.Writer) error {
-	_, err := fmt.Fprintf(w, "orc %s\n", version)
+	_, err := fmt.Fprintf(w, "foliot %s\n", version)
 	return err
 }
 

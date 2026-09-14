@@ -74,12 +74,12 @@ jobs:
       - name: go build
         run: |
           set -euo pipefail
-          go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/orc" ./cmd/orc
-          out=$("$RUNNER_TEMP/orc")
+          go build -trimpath -ldflags "-s -w" -o "$RUNNER_TEMP/foliot" ./cmd/foliot
+          out=$("$RUNNER_TEMP/foliot")
           echo "$out"
-          echo "examined=1 binaries, $(wc -c < "$RUNNER_TEMP/orc" | tr -d ' ') bytes"
+          echo "examined=1 binaries, $(wc -c < "$RUNNER_TEMP/foliot" | tr -d ' ') bytes"
           case "$out" in
-            "orc "*) ;;
+            "foliot "*) ;;
             *) echo "::error::the built binary did not print its version" >&2; exit 1 ;;
           esac
 

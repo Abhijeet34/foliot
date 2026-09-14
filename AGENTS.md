@@ -1,10 +1,10 @@
 # Operating manual
 
 This is the orchestrator's own manual, written for an agent driving it and for an agent working inside it.
-The test it must pass is that an agent that has never seen the tool can operate it correctly from this document and `orc <command> --help` alone: first run from an empty home, submit a request and answer its questions to dispatch, read status and resolve a decision, each reaching its terminal event with zero human messages and zero commands refused as malformed.
+The test it must pass is that an agent that has never seen the tool can operate it correctly from this document and `foliot <command> --help` alone: first run from an empty home, submit a request and answer its questions to dispatch, read status and resolve a decision, each reaching its terminal event with zero human messages and zero commands refused as malformed.
 Usage errors exit 2.
 Every rule here names its source: an invariant or contract assertion (`K1`..`K8`, `A1`..`A12`, `G1`..`G9`), an event type from the closed catalogue, a profile field, or a requirement `R<n>` of the product requirements; a measurement from the fleet that ran on this machine in 2026 is marked `hist:` and is history, never an instruction.
-Two words are fixed: the **driver** is whoever runs `orc` commands, the **human** is the person whose profile this home runs under and whose decisions some events wait on; how the human is addressed is a profile field asked at first run (`report.address`, R59), and "you" is used until it is answered.
+Two words are fixed: the **driver** is whoever runs `foliot` commands, the **human** is the person whose profile this home runs under and whose decisions some events wait on; how the human is addressed is a profile field asked at first run (`report.address`, R59), and "you" is used until it is answered.
 Every other name in this document is a command, an event, a field, or a file.
 
 ## 1. What holds by construction
@@ -12,7 +12,7 @@ Every other name in this document is a command, an event, a field, or a file.
 Each line is an invariant a named suite case asserts (p8 §2.6); a change to one is a change to the core and to this document in the same commit.
 None of them is a rule you have to remember: each is a refusal you will meet if you try.
 
-1. State is a fold of the log and nothing else is truth; `orc replay --verify` yields byte-identical state twice (K1) and `seq` is gapless (K2).
+1. State is a fold of the log and nothing else is truth; `foliot replay --verify` yields byte-identical state twice (K1) and `seq` is gapless (K2).
 2. No model in the loop: every `model.call` has `component=intake` or `component=bench` (K3); intake makes at most one bounded call per request.
 3. Dispatch is an ordered chain of events sharing one `record_hash`: `intake.ready`, `router.decided`, `capacity.admitted`, `workspace.created`, `task.dispatched` (K4).
 4. No steer without a cause: every `steer.sent` names the `seq` it answers (K5).
@@ -21,23 +21,23 @@ None of them is a rule you have to remember: each is a refusal you will meet if 
 7. One process per home, one writer, headless workers under per-run isolation: `home.lock` is held by the writer; a worker's stream is read and its screen does not exist; every worker runs under its own `HOME`, `XDG_*`, `TMPDIR` and `CODEX_HOME`; credentials reach a worker only through the adapter's injection (A8).
 8. A refusal is handled with identical bytes: one re-dispatch, then route, then block; nothing rewords a request or its intent (R42).
 9. The human is addressed on three triggers and the digest has a bound; everything else is status on demand (R61, R62).
-10. The core has no harness name and no profile string; `orc core-check` fails on either (K8).
-11. Nothing moves under running work: the binary is static, `orc update` is explicit and refuses while a task is live, and workers run with the auto-updater off (R75).
+10. The core has no harness name and no profile string; `foliot core-check` fails on either (K8).
+11. Nothing moves under running work: the binary is static, `foliot update` is explicit and refuses while a task is live, and workers run with the auto-updater off (R75).
 12. Small models are benchmark arms only; every such record is marked and no real task dispatches below the roster (R12).
 
 ## 2. Driving it
 
 ### First run
 
-`orc init --check --json` prints `{missing: [{field, question, default?, validation}], ok: [field]}`.
-`orc init --answer <field>=<value>` validates and writes one field.
-`orc init --check` exits 0 only when `missing` is empty, and nothing dispatches before it does (R58).
+`foliot init --check --json` prints `{missing: [{field, question, default?, validation}], ok: [field]}`.
+`foliot init --answer <field>=<value>` validates and writes one field.
+`foliot init --check` exits 0 only when `missing` is empty, and nothing dispatches before it does (R58).
 The setting questions for every registered project (`setting {domain, description, who_authorises, evidence_of_authorisation, posture}`) and `report.address` are part of `missing` (R23, R59).
 A fixture answers file and a ten-line driver reach exit 0 from an empty home in the conformance suite; that driver is the worked example of this section.
 
 ### Submitting a request
 
-`orc submit -F <request-file>` records `intake.received {request, source: human, sha256}` (**declared here**: the requirements name the scenario "submit a request" and the event, and no design document names the command; the flag shape follows the verbs' `-F` convention).
+`foliot submit -F <request-file>` records `intake.received {request, source: human, sha256}` (**declared here**: the requirements name the scenario "submit a request" and the event, and no design document names the command; the flag shape follows the verbs' `-F` convention).
 Intake then does four things you can read back from the log: it classifies (`intake.classified {kind, deliverable, repo, base, readings[], ruled_out[]}`), it names every field the request did not supply (`intake.unknown {field, default?}`), it asks before dispatch for every unknown with no default (`question.asked {phase: before}`), and when nothing is open it writes `intake.ready` with the record hash the whole dispatch chain carries.
 An unknown with a recorded default proceeds on the default and says so in the record.
 A question whose subject is destructive, irreversible, security-sensitive or a merge has no default and waits (R21).
@@ -47,26 +47,26 @@ Complexity is an intake field from `low`, `medium`, `high`, `xhigh`, set by the 
 
 ### Answering a question
 
-`orc answer <key> -F <answer-file>` records `question.answered {key, answer, by: human}` for a pre-dispatch question, or `decision.resolved {key, answer, by, under, file}` for a decision opened during a run (**declared here** for the `-F` form; `orc answer <key> --unnecessary` is the design's own form and records `question.answered {unnecessary: true}`, which is how question precision is measured, R24).
+`foliot answer <key> -F <answer-file>` records `question.answered {key, answer, by: human}` for a pre-dispatch question, or `decision.resolved {key, answer, by, under, file}` for a decision opened during a run (**declared here** for the `-F` form; `foliot answer <key> --unnecessary` is the design's own form and records `question.answered {unnecessary: true}`, which is how question precision is measured, R24).
 The `by` value is written `human` here and not the architecture's `captain`, because the same architecture forbids that string anywhere in the core (K8's fixed list); the catalogue's enum is the one place the architecture contradicts its own check, and the fix belongs in the catalogue and the fold's tests in one commit.
 A decision that a profile grant covers is answered by the orchestrator itself and recorded as `question.answered {by: orchestrator, under: <grant>}` (R55); you never answer a worker's own finding for it (G7).
-`orc feedback -F <file> --target <task-id>` records `feedback.received {text, targets[]}` and re-enters intake for each target (R26, **declared here** for the command shape).
-`orc cancel <task-id> --reason <text>` records `task.cancelled {reason}` (**declared here**).
+`foliot feedback -F <file> --target <task-id>` records `feedback.received {text, targets[]}` and re-enters intake for each target (R26, **declared here** for the command shape).
+`foliot cancel <task-id> --reason <text>` records `task.cancelled {reason}` (**declared here**).
 
 ### Reading state
 
-`orc status` prints one line per live task and nothing else, in this exact shape (R60):
+`foliot status` prints one line per live task and nothing else, in this exact shape (R60):
 
 ```text
 <id>  <state>  next: <step>  needs: none | decision <key> | credential <name>  spent: <usd>/<budget>
 ```
 
 `<state>` is one of `intake`, `ready`, `dispatched`, `running`, `verifying`, `landed`, `ended`, derived from the task's last relevant event and never written directly.
-`orc status --json` prints the full derived state (`tasks`, `workers`, `jobs`, `workspaces`, `holds`, `ledger`, `providers`, `bench`).
-`orc digest` prints at most 30 task lines of at most 200 characters, then every open question at most 400 characters with its recommendation, default and `applies_at`; the size is measured after rendering and a cut is stated in the last line with its count (R61).
-`orc log tail` is the terminal you may want and the only one that exists (R1).
-`orc ledger` prints one line per failure key with its count, rung and whether a check is owed (R40).
-`orc report real-work --since <ts>` prints one row per ended task with `outcome`, `spent_usd`, `questions_after`, `false_claims` and `rescues` (R18); `orc report lost-work --since <ts>` prints the no-lost-work reading (a5 §2.19).
+`foliot status --json` prints the full derived state (`tasks`, `workers`, `jobs`, `workspaces`, `holds`, `ledger`, `providers`, `bench`).
+`foliot digest` prints at most 30 task lines of at most 200 characters, then every open question at most 400 characters with its recommendation, default and `applies_at`; the size is measured after rendering and a cut is stated in the last line with its count (R61).
+`foliot log tail` is the terminal you may want and the only one that exists (R1).
+`foliot ledger` prints one line per failure key with its count, rung and whether a check is owed (R40).
+`foliot report real-work --since <ts>` prints one row per ended task with `outcome`, `spent_usd`, `questions_after`, `false_claims` and `rescues` (R18); `foliot report lost-work --since <ts>` prints the no-lost-work reading (a5 §2.19).
 
 ### When it speaks to you unprompted
 
@@ -108,7 +108,7 @@ Recoveries run unasked when they are reversible and lose nothing; the human's st
 | credential revoked or missing | none: the task is `blocked` with a trigger to the human naming the credential | yes |
 | branch delete, force push, a workspace with uncommitted work, a release tag, a publish | none unasked; a decision with no default | yes |
 
-`orc chaos --all` runs every playbook's case on the `fake` adapter and asserts the proof event and a no-lost-work reading, so "state survives a kill at any point" is a command's output, not a claim (R47, R71).
+`foliot chaos --all` runs every playbook's case on the `fake` adapter and asserts the proof event and a no-lost-work reading, so "state survives a kill at any point" is a command's output, not a claim (R47, R71).
 
 ## 3. Task kinds and the steps they declare
 
@@ -147,19 +147,19 @@ You were launched headless with a prompt that carries the request bytes, the set
 Your environment holds exactly the credentials the adapter injected and no other; your git identity is `worker@invalid` with no signing key, so a raw commit is unsigned and identifiable and the gate refuses it (R5, R50).
 Your scratch is your attempt's `TMPDIR`; the orchestrator removes it at attempt end.
 
-The verbs are your only path to these effects; each call is a typed message over `$ORC_SOCKET` bound to your attempt by a token in your environment and judged by policy before it runs; a denial returns its remedy text to you (R49).
+The verbs are your only path to these effects; each call is a typed message over `$FOLIOT_SOCKET` bound to your attempt by a token in your environment and judged by policy before it runs; a denial returns its remedy text to you (R49).
 
 | Verb | What the runner does | Policy it is judged by |
 | --- | --- | --- |
-| `orc-verb commit -F <message-file>` | `git commit` in your worktree under the orchestrator's git configuration, signed with the profile's key and carrying no agent trailer | message shape, no `Co-authored-by` naming an agent (`commit.forbid_trailers`), no `--no-gpg-sign` |
-| `orc-verb push` | `git push` with the orchestrator's credential to the branch the record names | branch matches the record; never the default branch; never force |
-| `orc-verb pr open --base <branch> --title-file <f> --body-file <f>` | `gh pr create` on the record's repository, registered as `forge.pr_opened` with the expected base | repository equals the record's; base equals the record's |
-| `orc-verb check run [--name <n>] -- <cmd>` | runs the check with stdout, stderr, exit code and an examined count captured to `<attempt>/checks/<n>/`, and records `check.ran` | a check named in the kind's steps; output captured, never regenerated |
-| `orc-verb job run [--deadline <s>] -- <cmd>` | starts a background job in its own process group with a deadline (declared default 1800 s) | the command is not a denied shape; the deadline is stated |
-| `orc-verb scratch rm <absolute-path>` | removes a path only under your scratch root | inside the scratch root and not a glob |
-| `orc-verb service record <pid> --stop <cmd>` | records a service you started, so cleanup can stop it | pid alive at record time, control probed |
-| `orc-verb claim <done\|blocked\|needs-decision\|disagree\|paused> [--key <slug>] -F <file>` | records a claim; `done` is checked against the kind's terminal evidence before anything follows | a `done` with no evidence yields `drift.claim`, never a terminal state |
-| `orc-verb ask -F <file>` | records `question.asked {phase: after}` and parks your attempt | counted; the target for this count is zero |
+| `foliot-verb commit -F <message-file>` | `git commit` in your worktree under the orchestrator's git configuration, signed with the profile's key and carrying no agent trailer | message shape, no `Co-authored-by` naming an agent (`commit.forbid_trailers`), no `--no-gpg-sign` |
+| `foliot-verb push` | `git push` with the orchestrator's credential to the branch the record names | branch matches the record; never the default branch; never force |
+| `foliot-verb pr open --base <branch> --title-file <f> --body-file <f>` | `gh pr create` on the record's repository, registered as `forge.pr_opened` with the expected base | repository equals the record's; base equals the record's |
+| `foliot-verb check run [--name <n>] -- <cmd>` | runs the check with stdout, stderr, exit code and an examined count captured to `<attempt>/checks/<n>/`, and records `check.ran` | a check named in the kind's steps; output captured, never regenerated |
+| `foliot-verb job run [--deadline <s>] -- <cmd>` | starts a background job in its own process group with a deadline (declared default 1800 s) | the command is not a denied shape; the deadline is stated |
+| `foliot-verb scratch rm <absolute-path>` | removes a path only under your scratch root | inside the scratch root and not a glob |
+| `foliot-verb service record <pid> --stop <cmd>` | records a service you started, so cleanup can stop it | pid alive at record time, control probed |
+| `foliot-verb claim <done\|blocked\|needs-decision\|disagree\|paused> [--key <slug>] -F <file>` | records a claim; `done` is checked against the kind's terminal evidence before anything follows | a `done` with no evidence yields `drift.claim`, never a terminal state |
+| `foliot-verb ask -F <file>` | records `question.asked {phase: after}` and parks your attempt | counted; the target for this count is zero |
 
 What each claim means: `done` is checked, not believed; `blocked` names something only the orchestrator or the human can clear; `needs-decision` opens a decision above you and parks you; `disagree` is first-class and answered by a steer carrying its cause, never penalised, and a ruled-out hypothesis you overturn is a ledger entry against the record rather than against you (R25); `paused` names a job you started through the `job run` verb, which is the only durable background path, because a process started outside the runner does not survive your turn (R8).
 A steer reaches you between turns and is acknowledged; anything longer than 64 KiB arrives as a file path in one line (R7).
@@ -173,10 +173,10 @@ Ask these in order and stop at the first yes (p8 §2.7).
 1. Does it change what an event means, the envelope, the catalogue, the fold, a stop rule, a verb, a control, a kind's required fields, or one of the twelve invariants above? **Core**, under `src/core/<component>`, and this document changes in the same commit.
 2. Does it describe how one specific harness launches, streams, steers, resumes, denies, bills, or reports cost? **That adapter**, under `src/adapters/<name>`; A1 to A12 do not change.
 3. Does it describe how one validation provider starts a run, reports steps and findings, or takes a response? **That provider**, under `src/providers/<name>`; G1 to G9 do not change.
-4. Is it a value someone else might set differently: a roster entry, a price, a weight, an interval, a grant, a scope glob, a kind's extra step, a budget, the address, the term map, a corpus's contents? **Profile data**, and `orc profile lint` must show a component that reads it.
-5. Is it a tool the worker uses, or a renderer that only reads `orc status --json` or the log and changes nothing the orchestrator does? **Outside the orchestrator**.
+4. Is it a value someone else might set differently: a roster entry, a price, a weight, an interval, a grant, a scope glob, a kind's extra step, a budget, the address, the term map, a corpus's contents? **Profile data**, and `foliot profile lint` must show a component that reads it.
+5. Is it a tool the worker uses, or a renderer that only reads `foliot status --json` or the log and changes nothing the orchestrator does? **Outside the orchestrator**.
 
-`orc profile lint` prints every profile field beside the component that reads it and fails on a field no component reads; it prints every rule the profile marks `kind: prose`, and `orc profile lint --check <path>` exits 1 when that list and the table in the named document differ in either direction (R57).
+`foliot profile lint` prints every profile field beside the component that reads it and fails on a field no component reads; it prints every rule the profile marks `kind: prose`, and `foliot profile lint --check <path>` exits 1 when that list and the table in the named document differ in either direction (R57).
 The immovable column is the core and the movable column is the profile; a rule in neither is a gap (a5 §2.21).
 
 ## 7. Judgement the driver keeps
@@ -195,29 +195,29 @@ Each names the row of the 2026 corpus audit it came from and the evidence it car
 
 ## 8. Command index
 
-Every `orc` command the design corpus names, one line each; a command marked **declared here** is named in this document and owed by the architecture.
+Every `foliot` command the design corpus names, one line each; a command marked **declared here** is named in this document and owed by the architecture.
 
 | Command | What it does | Source |
 | --- | --- | --- |
-| `orc init --check --json`, `orc init --answer <field>=<value>` | first run; nothing dispatches until `--check` exits 0 | R58 |
-| `orc submit -F <file>` | records a request and starts intake | **declared here** |
-| `orc answer <key> -F <file>`, `orc answer <key> --unnecessary` | answers a question or a decision; marks one unnecessary | R24; `-F` **declared here** |
-| `orc feedback -F <file> --target <task-id>` | feedback that re-enters intake | R26; shape **declared here** |
-| `orc cancel <task-id> --reason <text>` | records `task.cancelled` | **declared here** |
-| `orc status`, `orc status --json` | one line per live task; the derived state | R60 |
-| `orc digest` | the bounded digest with every open question | R61 |
-| `orc log tail` | the live tail of the event log | R1 |
-| `orc ledger` | failure keys with count, rung, owed | R40 |
-| `orc report real-work --since <ts>`, `orc report lost-work --since <ts>` | real work landed; the no-lost-work reading | R18; a5 §2.19 |
-| `orc capacity --probe` | the machine's admission line | R69 |
-| `orc profile lint [--check <path>]` | every profile field beside its reader; the prose list | R57 |
-| `orc core-check` | no harness name and no profile string in the core | K8 |
-| `orc replay --verify` | fold the log twice and compare | K1 |
-| `orc conformance --kernel`, `--adapter <name>`, `--all-adapters`, `--gate <name>` | the contract suites with counts | R2, R54 |
-| `orc chaos --all` | the recovery cases on the `fake` adapter | R47 |
-| `orc bench corpus verify --corpus v1`, `orc bench estimate`, `orc bench run`, `orc bench report` | the benchmark instrument | R9 to R17 |
-| `orc import --from tasks-axi <backlog.md> --verify` | import the previous queue and its holds | a5 §2.19 |
-| `orc update` | explicit update; refuses while a task is live | R75 |
+| `foliot init --check --json`, `foliot init --answer <field>=<value>` | first run; nothing dispatches until `--check` exits 0 | R58 |
+| `foliot submit -F <file>` | records a request and starts intake | **declared here** |
+| `foliot answer <key> -F <file>`, `foliot answer <key> --unnecessary` | answers a question or a decision; marks one unnecessary | R24; `-F` **declared here** |
+| `foliot feedback -F <file> --target <task-id>` | feedback that re-enters intake | R26; shape **declared here** |
+| `foliot cancel <task-id> --reason <text>` | records `task.cancelled` | **declared here** |
+| `foliot status`, `foliot status --json` | one line per live task; the derived state | R60 |
+| `foliot digest` | the bounded digest with every open question | R61 |
+| `foliot log tail` | the live tail of the event log | R1 |
+| `foliot ledger` | failure keys with count, rung, owed | R40 |
+| `foliot report real-work --since <ts>`, `foliot report lost-work --since <ts>` | real work landed; the no-lost-work reading | R18; a5 §2.19 |
+| `foliot capacity --probe` | the machine's admission line | R69 |
+| `foliot profile lint [--check <path>]` | every profile field beside its reader; the prose list | R57 |
+| `foliot core-check` | no harness name and no profile string in the core | K8 |
+| `foliot replay --verify` | fold the log twice and compare | K1 |
+| `foliot conformance --kernel`, `--adapter <name>`, `--all-adapters`, `--gate <name>` | the contract suites with counts | R2, R54 |
+| `foliot chaos --all` | the recovery cases on the `fake` adapter | R47 |
+| `foliot bench corpus verify --corpus v1`, `foliot bench estimate`, `foliot bench run`, `foliot bench report` | the benchmark instrument | R9 to R17 |
+| `foliot import --from tasks-axi <backlog.md> --verify` | import the previous queue and its holds | a5 §2.19 |
+| `foliot update` | explicit update; refuses while a task is live | R75 |
 
 ## Maintaining this file
 

@@ -10,7 +10,7 @@ func TestPrintVersion(t *testing.T) {
 	if err := printVersion(&out); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := out.String(), "orc "+version+"\n"; got != want {
+	if got, want := out.String(), "foliot "+version+"\n"; got != want {
 		t.Fatalf("printVersion wrote %q, want %q", got, want)
 	}
 }
