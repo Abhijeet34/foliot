@@ -121,7 +121,7 @@ func TestAppendWritesTheEnvelopeInOrder(t *testing.T) {
 	}
 	data, _ := os.ReadFile(Path(root))
 	lines := strings.Split(string(data), "\n")
-	want := `{"seq":2,"ts":"2026-09-14T12:00:00.003Z","type":"bench.verdict","task":"log-core-l1","attempt":null,"actor":"bench","cause":1,"evidence":[{"kind":"file","ref":"bench/checks/t1/check.sh"}],"data":{"corpus":"v1","task":"t1","arm":"bare-m","repeat":1,"pass":true,"false_claim":false,"columns":{"cost_usd":0.5}},"v":1}`
+	want := `{"seq":2,"ts":"2026-09-14T12:00:00.003Z","type":"bench.verdict","task":"log-core-l1","attempt":null,"actor":"bench","cause":1,"evidence":[{"kind":"file","ref":"bench/checks/t1/check.sh"}],"data":{"corpus":"v1","task":"t1","arm":"bare-m","repeat":1,"pass":true,"false_claim":false,"columns":{"cost_usd":0.5},"check_exit":0,"examined":0},"v":1}`
 	if len(lines) != 3 || lines[2] != "" || lines[1] != want {
 		t.Fatalf("log is\n%s\nwant line 2\n%s", data, want)
 	}
@@ -282,7 +282,7 @@ func TestInvalidKnownEventIsQuarantinedAndSkippedByTheFold(t *testing.T) {
 	if got := types(evs); got != "3:log.quarantined" {
 		t.Fatalf("events: %s, want only the quarantine of seq 1 (the unknown type is skipped, not quarantined)", got)
 	}
-	if !strings.Contains(string(evs[0].Data), `missing required data field \"task\"`) {
+	if !strings.Contains(string(evs[0].Data), `missing required data field \"corpus_sha\"`) {
 		t.Fatalf("quarantine reason %s", evs[0].Data)
 	}
 }
