@@ -29,6 +29,7 @@ None of them is a rule you have to remember: each is a refusal you will meet if 
 
 ### First run
 
+`<root>` is `$FOLIOT_HOME` and must be an absolute path; no command falls back to another location (a5 §2.20 names the variable; the absence of a default is **declared here**, `src/core/log/root.go`).
 `foliot init --check --json` prints `{missing: [{field, question, default?, validation}], ok: [field]}`.
 `foliot init --answer <field>=<value>` validates and writes one field.
 `foliot init --check` exits 0 only when `missing` is empty, and nothing dispatches before it does (R58).
@@ -178,6 +179,8 @@ Ask these in order and stop at the first yes (p8 §2.7).
 
 `foliot profile lint` prints every profile field beside the component that reads it and fails on a field no component reads; it prints every rule the profile marks `kind: prose`, and `foliot profile lint --check <path>` exits 1 when that list and the table in the named document differ in either direction (R57).
 The immovable column is the core and the movable column is the profile; a rule in neither is a gap (a5 §2.21).
+
+Every package with tests has `func TestMain(m *testing.M) { os.Exit(testenv.Main(m)) }` and every test starts with `testenv.Isolate(t)`, from `internal/testenv` (R76, a5 §2.17); `go test -v ./...` prints one `FOLIOT_TEST_WITNESS` line per real root and fails a package whose tests changed one.
 
 ## 7. Judgement the driver keeps
 
