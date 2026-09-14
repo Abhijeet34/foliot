@@ -154,3 +154,28 @@ func TestReplayVerifyRefusesAnUnverifiableLog(t *testing.T) {
 		t.Fatalf("a root with no log: exit %d, stderr %q", code, errOut)
 	}
 }
+
+func TestCorpusVerifyExitCodes(t *testing.T) {
+	testenv.Isolate(t)
+	empty := t.TempDir()
+	for _, c := range []struct {
+		name, root string
+		args       []string
+		code       int
+		want       string
+	}{
+		{"an unknown bench command is a usage error", "/unused", []string{"bench", "run"}, 2, "unknown command"},
+		{"verify without --corpus", "/unused", []string{"bench", "corpus", "verify"}, 2, "--corpus <name> is required"},
+		{"verify with a path for a corpus", "/unused", []string{"bench", "corpus", "verify", "--corpus", "../v1"}, 2, "plain name"},
+		{"verify with a stray argument", "/unused", []string{"bench", "corpus", "verify", "--corpus", "v1", "extra"}, 2, "unexpected argument"},
+		{"verify with --jobs 0", "/unused", []string{"bench", "corpus", "verify", "--corpus", "v1", "--jobs", "0"}, 2, "--jobs must be at least 1"},
+		{"verify without FOLIOT_HOME", "", []string{"bench", "corpus", "verify", "--corpus", "v1"}, 2, "FOLIOT_HOME"},
+		{"verify over a missing corpus", empty, []string{"bench", "corpus", "verify", "--corpus", "v1"}, 1, "corpus.json"},
+		{"verify --help", "", []string{"bench", "corpus", "verify", "--help"}, 0, "usage: foliot bench corpus verify"},
+	} {
+		code, out, errOut := foliot(c.root, c.args...)
+		if code != c.code || !strings.Contains(out+errOut, c.want) {
+			t.Errorf("%s: foliot %q exited %d\nstdout: %s\nstderr: %s\nwant exit %d containing %q", c.name, c.args, code, out, errOut, c.code, c.want)
+		}
+	}
+}
