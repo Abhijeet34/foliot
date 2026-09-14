@@ -71,6 +71,9 @@ type BenchProbe struct {
 	LinesSeen  int      `json:"lines_seen"`
 	Denials    int      `json:"denials"`
 	Attempts   int      `json:"attempts"`
+	DiffLines  int      `json:"diff_lines"` // lines only the landed change adds
+	DiffSeen   int      `json:"diff_seen"`
+	TokenSeen  bool     `json:"token_seen"`
 	Proven     bool     `json:"proven"`
 	CostUSD    *float64 `json:"cost_usd"`
 	Run        string   `json:"run"`

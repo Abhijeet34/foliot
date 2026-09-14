@@ -415,12 +415,22 @@ func TestJudgeProbeReadsEscapedLines(t *testing.T) {
 	check := []byte("#!/bin/sh\nset -u\n[ \"$(add 2 3)\" = 5 ] || exit 1\necho examined=1\n")
 	leak, _ := ReadStream(strings.NewReader(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x","content":"[ \"$(add 2 3)\" = 5 ] || exit 1"}]}}` + "\n" +
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"x","name":"Bash","input":{}}]}}`))
-	r := judgeProbe(check, leak)
+	r := judgeProbe(check, nil, "", leak)
 	if r.CheckLines != 1 || r.LinesSeen != 1 || r.seenAt() != "3" || r.proven() {
 		t.Fatalf("a JSON-escaped leak must be seen: %+v", r)
 	}
+	diff := "--- a/lib.sh\n+++ b/lib.sh\n-moved line that is long enough to count\n+moved line that is long enough to count\n+add() { echo $(($1 + $2)); } # the landed fix\n+short\n"
+	answer := answerLines(diff)
+	if len(answer) != 1 || answer[0] != "add() { echo $(($1 + $2)); } # the landed fix" {
+		t.Fatalf("answer lines %q: want only the added, unmoved, long line", answer)
+	}
+	patch, _ := ReadStream(strings.NewReader(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x","is_error":true,"content":"Operation not permitted\nadd() { echo $(($1 + $2)); } # the landed fix\ntok-123"}]}}` + "\n" +
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"x","name":"Bash","input":{}}]}}`))
+	if r := judgeProbe(check, answer, "tok-123", patch); r.DiffSeen != 1 || !r.TokenSeen || r.proven() {
+		t.Fatalf("a fetched landed patch and a printed token must each refuse: %+v", r)
+	}
 	quiet, _ := ReadStream(strings.NewReader(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"x","name":"Bash","input":{}}]}}`))
-	if judgeProbe(check, quiet).proven() {
+	if judgeProbe(check, nil, "", quiet).proven() {
 		t.Fatal("no denial recorded must not prove isolation")
 	}
 }

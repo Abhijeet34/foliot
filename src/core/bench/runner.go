@@ -353,7 +353,7 @@ func (s *session) sweep(ctx context.Context, runs []plannedRun, tasks []*Task, b
 		return nil, err
 	}
 	if !reading.proven() {
-		return nil, refusef("isolation probe seq %d did not prove isolation: lines_seen=%d denials=%d attempts=%d", probeSeq, reading.LinesSeen, reading.Denials, reading.Attempts)
+		return nil, refusef("isolation probe seq %d did not prove isolation: lines_seen=%d diff_seen=%d token_seen=%t denials=%d attempts=%d", probeSeq, reading.LinesSeen, reading.DiffSeen, reading.TokenSeen, reading.Denials, reading.Attempts)
 	}
 	costs := map[string][]float64{}
 	var spent float64
@@ -469,7 +469,7 @@ func (s *session) writeProfile(w *workspace) error {
 
 // probe runs the isolation probe (Fable critique k3 section 1.3 item 1) and records it.
 func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool, capUSD float64) (int64, ProbeReading, error) {
-	w, _, _, err := s.prepare(ctx, task, "probe-"+arm.Name)
+	w, mirror, _, err := s.prepare(ctx, task, "probe-"+arm.Name)
 	if err != nil {
 		return 0, ProbeReading{}, err
 	}
@@ -486,7 +486,11 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 		// that mode is not a runnable arm and proves nothing about isolation.
 		mode, permissions = "absent", "bypassPermissions"
 	}
-	st, _, err := s.launch(ctx, w, arm, capUSD, permissions, probePrompt(s.Root, task.ID))
+	diff, err := gitOut(ctx, mirror, "diff", "--no-color", "--no-ext-diff", "--unified=0", task.BaseSHA, task.LandedSHA)
+	if err != nil {
+		return 0, ProbeReading{}, err
+	}
+	st, _, err := s.launch(ctx, w, arm, capUSD, permissions, probePrompt(s.Root, task))
 	if err != nil {
 		return 0, ProbeReading{}, err
 	}
@@ -494,11 +498,12 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 	if err != nil {
 		return 0, ProbeReading{}, err
 	}
-	reading := judgeProbe(check, st)
+	reading := judgeProbe(check, answerLines(diff), s.token, st)
 	p := log.BenchProbe{
 		Corpus: s.Corpus, Task: task.ID, Arm: arm.Name, Model: arm.Model, Isolation: mode,
 		CheckLines: reading.CheckLines, LinesSeen: reading.LinesSeen, Denials: reading.Denials,
-		Attempts: reading.Attempts, Proven: isolated && reading.proven(), Run: rel(s.Root, w.record),
+		Attempts: reading.Attempts, DiffLines: reading.DiffLines, DiffSeen: reading.DiffSeen, TokenSeen: reading.TokenSeen,
+		Proven: isolated && reading.proven(), Run: rel(s.Root, w.record),
 	}
 	if st.Result != nil {
 		p.CostUSD = st.Result.TotalCostUSD
@@ -508,8 +513,8 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 	if err != nil {
 		return 0, reading, err
 	}
-	fmt.Fprintf(s.Out, "probe: seq=%d arm=%s task=%s isolation=%s check_lines=%d lines_seen=%d denials=%d attempts=%d proven=%t cost_usd=%s week_used=%s transcript=%s\n",
-		seq, arm.Name, task.ID, mode, reading.CheckLines, reading.LinesSeen, reading.Denials, reading.Attempts, p.Proven, fmtCost(p.CostUSD), fmtPct(st.WeekUsed), filepath.Join(w.record, "stream.jsonl"))
+	fmt.Fprintf(s.Out, "probe: seq=%d arm=%s task=%s isolation=%s check_lines=%d lines_seen=%d diff_lines=%d diff_seen=%d token_seen=%t denials=%d attempts=%d proven=%t cost_usd=%s week_used=%s transcript=%s\n",
+		seq, arm.Name, task.ID, mode, reading.CheckLines, reading.LinesSeen, reading.DiffLines, reading.DiffSeen, reading.TokenSeen, reading.Denials, reading.Attempts, p.Proven, fmtCost(p.CostUSD), fmtPct(st.WeekUsed), filepath.Join(w.record, "stream.jsonl"))
 	if len(reading.Seen) > 0 {
 		// Line numbers only: the check's text must not leave the denied directories.
 		fmt.Fprintf(s.Out, "  seen: check lines %s\n", reading.seenAt())
@@ -544,7 +549,7 @@ func Probe(ctx context.Context, cfg Config, armName, taskID string, isolated boo
 		return err
 	}
 	if !isolated || !reading.proven() {
-		return refusef("probe seq %d: isolation not proven (lines_seen=%d denials=%d attempts=%d)", seq, reading.LinesSeen, reading.Denials, reading.Attempts)
+		return refusef("probe seq %d: isolation not proven (lines_seen=%d diff_seen=%d token_seen=%t denials=%d attempts=%d)", seq, reading.LinesSeen, reading.DiffSeen, reading.TokenSeen, reading.Denials, reading.Attempts)
 	}
 	return nil
 }
