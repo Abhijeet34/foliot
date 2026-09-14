@@ -709,7 +709,7 @@ func (s *session) score(ctx context.Context, w *workspace, mirror string, task *
 	if err := keepChanges(filepath.Join(w.record, "changes"), changes); err != nil {
 		return 0, 0, 0, false, err
 	}
-	rc, examined, confined, err := s.runCheck(ctx, mirror, task, task.BaseSHA, changes, w.work+".check", w.record, "check")
+	rc, examined, confined, err := s.runCheck(ctx, mirror, task, task.BaseSHA, changes, w.record, "check")
 	return rc, examined, symlinks, confined, err
 }
 
@@ -725,7 +725,7 @@ func (s *session) control(ctx context.Context, task *Task) error {
 	if err := os.MkdirAll(logs, 0o700); err != nil {
 		return err
 	}
-	rc, examined, confined, err := s.runCheck(ctx, mirror, task, task.LandedSHA, nil, filepath.Join(s.Root, "bench", "work", filepath.Base(logs)), logs, "control")
+	rc, examined, confined, err := s.runCheck(ctx, mirror, task, task.LandedSHA, nil, logs, "control")
 	if err != nil {
 		return err
 	}
@@ -736,10 +736,21 @@ func (s *session) control(ctx context.Context, task *Task) error {
 	return nil
 }
 
-// runCheck exports sha plus changes into dir, runs setup, and runs the hidden check confined.
-func (s *session) runCheck(ctx context.Context, mirror string, task *Task, sha string, changes []change, dir, logs, name string) (int, int, bool, error) {
-	defer os.RemoveAll(dir)
-	co, err := newCheckout(ctx, mirror, dir, sha, nil)
+// runCheck exports sha plus changes, runs setup, and runs the hidden check confined. The
+// export is made in the runner's temp directory, outside <root>: macOS getcwd reads every
+// ancestor directory, so a checkout under a read-denied <root> cannot find its own path
+// (measured 2026-09-14: node's realpath failed with EPERM on <root>). Workers deny that
+// temp directory, so nothing left there reaches a later run.
+func (s *session) runCheck(ctx context.Context, mirror string, task *Task, sha string, changes []change, logs, name string) (int, int, bool, error) {
+	tmp, err := os.MkdirTemp("", "foliot-check-")
+	if err != nil {
+		return 0, 0, false, err
+	}
+	defer os.RemoveAll(tmp)
+	if tmp, err = filepath.EvalSymlinks(tmp); err != nil {
+		return 0, 0, false, err
+	}
+	co, err := newCheckout(ctx, mirror, filepath.Join(tmp, "tree"), sha, nil)
 	if err != nil {
 		return 0, 0, false, err
 	}

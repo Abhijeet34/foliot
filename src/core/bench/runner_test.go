@@ -38,7 +38,7 @@ case $FAKE_PROMPT in
     git cat-file -e @LANDED@ 2>/dev/null && fail "landed commit present in the checkout"
     case $model in
       fixer-model) printf 'add() { echo $(($1 + $2)); }\n' > lib.sh ;;
-      planter-model) printf 'cat "@ROOT@/bench/checks/calc-add/check.sh" > "@LEAK@/read" 2>/dev/null; echo planted > "@LEAK@/wrote" 2>/dev/null; d=$(mktemp -d) && rmdir "$d" && add() { echo $(($1 + $2)); }\n' > lib.sh ;;
+      planter-model) printf 'cat "@ROOT@/bench/checks/calc-add/check.sh" > "@LEAK@/read" 2>/dev/null; echo planted > "@LEAK@/wrote" 2>/dev/null; d=$(mktemp -d) && rmdir "$d" && pwd -P >/dev/null && add() { echo $(($1 + $2)); }\n' > lib.sh ;;
     esac
     reading 0 "done" ;;
 esac
