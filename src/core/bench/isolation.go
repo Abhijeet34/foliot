@@ -87,6 +87,7 @@ type ProbeReading struct {
 	Seen                                     []int // 1-based line numbers in check.sh
 	DiffLines, DiffSeen                      int
 	TokenSeen                                bool
+	CostUSD                                  *float64 // the probe's own cost, from its stream
 }
 
 func (r ProbeReading) seenAt() string {

@@ -298,6 +298,16 @@ func TestControlRefusesAScoringEnvironmentTheLandedChangeCannotPass(t *testing.T
 	}
 }
 
+func TestRunStartsNoRunWhoseCapWouldPassTheBudget(t *testing.T) {
+	// The caps project $1.80 inside $1.90, but the probe and each run cost $0.80: after the
+	// probe and one run, $1.60 plus the next $0.90 cap no longer fits.
+	r := newRunnerFixture(t, "@COST@", "0.8")
+	err := Run(context.Background(), r.cfg, SweepOptions{Arms: "fixer,idle", Repeats: 1, BudgetUSD: 1.9, CapUSD: 0.9})
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "cap does not fit") || r.launched() != 2 {
+		t.Fatalf("err %v after %d launches, want the probe and one run, then a refusal\n%s", err, r.launched(), r.out)
+	}
+}
+
 func TestRunStopsAtTheWeeklyRateLimit(t *testing.T) {
 	r := newRunnerFixture(t, "@WEEK@", "0.81")
 	err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5})
@@ -308,7 +318,8 @@ func TestRunStopsAtTheWeeklyRateLimit(t *testing.T) {
 
 func TestReportRefusesAColumnWithNoReading(t *testing.T) {
 	r := newRunnerFixture(t, "@COST@", "null")
-	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}); err != nil {
+	// An unknown cost counts at its $3 cap, the probe's included, so the budget holds two caps.
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 6}); err != nil {
 		t.Fatalf("Run: %v\n%s", err, r.out)
 	}
 	events, _ := log.Read(log.Path(r.root), 1)

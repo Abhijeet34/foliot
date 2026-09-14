@@ -380,13 +380,18 @@ func (s *session) sweep(ctx context.Context, runs []plannedRun, tasks []*Task, b
 		return nil, refusef("isolation probe seq %d did not prove isolation: lines_seen=%d diff_seen=%d token_seen=%t denials=%d attempts=%d", probeSeq, reading.LinesSeen, reading.DiffSeen, reading.TokenSeen, reading.Denials, reading.Attempts)
 	}
 	costs := map[string][]float64{}
-	var spent float64
+	spent := runs[0].cap // the probe is paid for too; an unknown cost counts at its cap
+	if reading.CostUSD != nil {
+		spent = *reading.CostUSD
+	}
 	for _, r := range runs {
 		if err := s.rateLimitOK(); err != nil {
 			return costs, err
 		}
-		if budget > 0 && spent >= budget {
-			return costs, refusef("spent $%.2f of --budget-usd %.2f; no further run starts", spent, budget)
+		// A run starts only when its cap still fits, so the sweep ends within the budget but
+		// for the one-turn overshoot a harness cap allows.
+		if budget > 0 && spent+r.cap > budget {
+			return costs, refusef("spent $%.4f of --budget-usd %.2f, and the next run's $%.2f cap does not fit; no further run starts", spent, budget, r.cap)
 		}
 		c, err := s.runOne(ctx, r, probeSeq)
 		if err != nil {
@@ -505,6 +510,7 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 		Attempts: reading.Attempts, DiffLines: reading.DiffLines, DiffSeen: reading.DiffSeen, TokenSeen: reading.TokenSeen,
 		Proven: isolated && reading.proven(), Run: rel(s.Root, w.record), CostUSD: st.CostUSD,
 	}
+	reading.CostUSD = st.CostUSD
 	seq, err := s.log.Append(log.Entry{Type: "bench.probe", Actor: "bench", Data: p,
 		Evidence: []log.Evidence{{Kind: "file", Ref: rel(s.Root, filepath.Join(w.record, "stream.jsonl"))}}})
 	if err != nil {
