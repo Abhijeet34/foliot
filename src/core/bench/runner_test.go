@@ -240,6 +240,17 @@ func TestRunRefusesBeforeLaunching(t *testing.T) {
 			json.Unmarshal(b, &p)
 			os.Chmod(p.Credentials["fake"], 0o644)
 		}, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}},
+		{"arms use different adapters", "isolation probe only proves adapter fake", func(r *runnerFixture) {
+			var p Profile
+			b, _ := os.ReadFile(ProfilePath(r.root))
+			json.Unmarshal(b, &p)
+			p.Arms = append(p.Arms, Arm{Name: "other", Adapter: "fake2", Model: "idle-model",
+				Provider: "test", Cutoff: "2026-01", CutoffSource: "test", CapUSD: 3})
+			p.Credentials["fake2"] = p.Credentials["fake"]
+			nb, _ := json.Marshal(p)
+			os.WriteFile(ProfilePath(r.root), nb, 0o644)
+			r.cfg.Adapters["fake2"] = r.fake
+		}, SweepOptions{Arms: "idle,other", Repeats: 1, BudgetUSD: 10}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
