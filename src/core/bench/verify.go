@@ -478,7 +478,7 @@ func (c *checkout) sh(ctx context.Context, command string, env []string, timeout
 	defer f.Close()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = c.dir
-	cmd.Env = append(append(environ(), "CI=true"), env...)
+	cmd.Env = mergeEnv(environ(), append([]string{"CI=true"}, env...))
 	cmd.Stdout, cmd.Stderr = f, f
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
@@ -501,6 +501,25 @@ func (c *checkout) sh(ctx context.Context, command string, env []string, timeout
 		fmt.Fprintf(f, "\n%v\n", err)
 		return 125
 	}
+}
+
+// mergeEnv drops every base entry whose key an override sets, so the override is the only value
+// a child process can read for that key, regardless of a platform's duplicate-key resolution.
+func mergeEnv(base, overrides []string) []string {
+	set := make(map[string]bool, len(overrides))
+	for _, kv := range overrides {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			set[kv[:i]] = true
+		}
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	for _, kv := range base {
+		if i := strings.IndexByte(kv, '='); i >= 0 && set[kv[:i]] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, overrides...)
 }
 
 // environ is the process environment without FOLIOT_HOME, so no step learns where the corpus is.

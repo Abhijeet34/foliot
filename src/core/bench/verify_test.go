@@ -225,6 +225,21 @@ func TestVerifyRefuses(t *testing.T) {
 	}
 }
 
+func TestVerifyClosesTheHostsProxyForAHiddenCheck(t *testing.T) {
+	f := newFixture(t)
+	f.check = `want="http:""//127.0.0.1:9"
+[ "$HTTP_PROXY" = "$want" ] || { echo "HTTP_PROXY leaked: $HTTP_PROXY"; exit 1; }
+[ "$HTTPS_PROXY" = "$want" ] || { echo "HTTPS_PROXY leaked: $HTTPS_PROXY"; exit 1; }
+` + goodCheck
+	f.save(t, defaultManifest())
+	t.Setenv("HTTP_PROXY", "http://real-proxy.example:9999")
+	t.Setenv("HTTPS_PROXY", "http://real-proxy.example:9999")
+	s, r, out := f.verify(t)
+	if !s.Success() || r.Landed != 0 {
+		t.Fatalf("want the hidden check to see the closed proxy despite the host's own HTTP_PROXY, got %+v\n%s", r, out)
+	}
+}
+
 func TestVerifyRefusesAnUncommittedCorpus(t *testing.T) {
 	f := newFixture(t)
 	f.save(t, defaultManifest())
