@@ -428,6 +428,11 @@ func (s *session) env(w *workspace) []string {
 		"DISABLE_AUTOUPDATER=1",
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		"DISABLE_TELEMETRY=1",
+		// Measured 2026-09-14: corpus v1's visible suite runs 306 s against the harness's
+		// 120 s default Bash timeout, which would push every arm's suite to the background.
+		"BASH_DEFAULT_TIMEOUT_MS=600000",
+		// npm's update check reaches the registry, which the run profile denies.
+		"NPM_CONFIG_UPDATE_NOTIFIER=false",
 		tokenEnv + "=" + s.token,
 	}
 	for _, k := range []string{"LANG", "LC_ALL", "USER", "LOGNAME", "SHELL", "TERM"} {
