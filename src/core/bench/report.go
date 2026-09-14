@@ -75,16 +75,20 @@ func Report(o ReportOptions) error {
 	if err != nil {
 		return err
 	}
-	var runs []log.RunRecord
+	var runs, corpusRuns []log.RunRecord
 	for _, rec := range log.Runs(events) {
-		if rec.Run.Corpus == o.Corpus && scope[rec.Run.Task] && rec.Verdict != nil {
+		if rec.Run.Corpus != o.Corpus {
+			continue
+		}
+		corpusRuns = append(corpusRuns, rec)
+		if scope[rec.Run.Task] && rec.Verdict != nil {
 			runs = append(runs, rec)
 		}
 	}
 
 	var refusals []string
 	w := o.Out
-	header(w, o.Corpus, ids, tasks, len(scope), runs)
+	header(w, o.Corpus, ids, tasks, len(scope), len(runs), corpusRuns)
 
 	arms := o.Arms
 	if len(arms) == 0 {
@@ -144,7 +148,8 @@ func Report(o ReportOptions) error {
 
 // header states what the corpus is drawn from, so no reader takes one repository's
 // numbers for a general result (Fable critique k3 section 1.2).
-func header(w io.Writer, corpus string, ids []string, tasks map[string]*Task, inScope int, runs []log.RunRecord) {
+// A repository's visibility and language are read from any run of the corpus, in scope or not.
+func header(w io.Writer, corpus string, ids []string, tasks map[string]*Task, inScope, scored int, runs []log.RunRecord) {
 	byRepo := map[string]int{}
 	for _, id := range ids {
 		byRepo[tasks[id].Repository]++
@@ -170,7 +175,7 @@ func header(w io.Writer, corpus string, ids []string, tasks map[string]*Task, in
 		}
 		fmt.Fprintf(w, "corpus %s is %d of %d tasks from %s %s %s repository (%s)\n", corpus, byRepo[repo], len(ids), count, visibility, language, repo)
 	}
-	fmt.Fprintf(w, "scope: %d of %d tasks; runs with a verdict: %d; spread is max minus min of the column over repeat indices\n", inScope, len(ids), len(runs))
+	fmt.Fprintf(w, "scope: %d of %d tasks; runs with a verdict: %d; spread is max minus min of the column over repeat indices\n", inScope, len(ids), scored)
 }
 
 // contamination prints the arm's training cutoff against when its tasks' landed changes
