@@ -265,9 +265,10 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 		refuse("criterion 3: the hidden check exits 0 on base_sha with the landed file layout and none of its content, so it reads which files exist rather than testing them")
 	}
 	// The visible suite is the slowest step, so it runs last, only for a task nothing refused,
-	// in its own checkout that never held the check.
+	// in its own checkout that never held the check. It is a git clone, not an export, because
+	// a repository's own suite may read its index (git ls-files) and is red without one.
 	if len(r.Refusals) == 0 {
-		co, err := newCheckout(ctx, mirror, filepath.Join(work, "visible"), t.BaseSHA, nil)
+		co, err := newClone(ctx, mirror, filepath.Join(work, "visible"), t.BaseSHA)
 		if err != nil {
 			refuse("criterion 1: visible checkout: %v", err)
 			return r
@@ -407,6 +408,16 @@ func ensureMirror(ctx context.Context, repos, url string, shas ...string) (strin
 }
 
 type checkout struct{ dir string }
+
+func newClone(ctx context.Context, mirror, dir, sha string) (*checkout, error) {
+	if _, err := gitOut(ctx, filepath.Dir(dir), "clone", "--quiet", "--shared", "--no-checkout", mirror, dir); err != nil {
+		return nil, err
+	}
+	if _, err := gitOut(ctx, dir, "checkout", "--quiet", "--detach", sha); err != nil {
+		return nil, err
+	}
+	return &checkout{dir: dir}, nil
+}
 
 func newCheckout(ctx context.Context, mirror, dir, sha string, layout []change) (*checkout, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {

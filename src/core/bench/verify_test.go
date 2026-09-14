@@ -60,7 +60,8 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{root: filepath.Join(dir, "root"), src: filepath.Join(dir, "calc")}
 	git(t, dir, "init", "--quiet", "--initial-branch=main", f.src)
 	write(t, filepath.Join(f.src, "lib.sh"), "add() { echo $(($1 - $2)); }\n")
-	write(t, filepath.Join(f.src, "test.sh"), ". ./lib.sh\n[ \"$(add 2 0)\" = 2 ]\n")
+	// The visible suite reads the git index, as a real repository's suite may.
+	write(t, filepath.Join(f.src, "test.sh"), ". ./lib.sh\n[ \"$(add 2 0)\" = 2 ]\ngit ls-files --error-unmatch lib.sh >/dev/null\n")
 	git(t, f.src, "add", ".")
 	git(t, f.src, "commit", "--quiet", "-m", "start")
 	f.base = git(t, f.src, "rev-parse", "HEAD")
@@ -162,7 +163,7 @@ func TestVerifyRefuses(t *testing.T) {
 			f.check = "sh test.sh\n" + goodCheck
 		}},
 		{"a check that is a repository file", "byte-identical to a file in the repository", func(f *fixture, _ *Manifest) {
-			f.check = ". ./lib.sh\n[ \"$(add 2 0)\" = 2 ]\n"
+			f.check = ". ./lib.sh\n[ \"$(add 2 0)\" = 2 ]\ngit ls-files --error-unmatch lib.sh >/dev/null\n"
 		}},
 		{"a check that examines nothing", "printed no examined", func(f *fixture, _ *Manifest) {
 			f.check = strings.TrimSuffix(goodCheck, "echo examined=1\n")
