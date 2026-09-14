@@ -38,7 +38,7 @@ case $FAKE_PROMPT in
     git cat-file -e @LANDED@ 2>/dev/null && fail "landed commit present in the checkout"
     case $model in
       fixer-model) printf 'add() { echo $(($1 + $2)); }\n' > lib.sh ;;
-      planter-model) printf 'cat "@ROOT@/bench/checks/calc-add/check.sh" > "@LEAK@/read" 2>/dev/null; echo planted > "@LEAK@/wrote" 2>/dev/null; add() { echo $(($1 + $2)); }\n' > lib.sh ;;
+      planter-model) printf 'cat "@ROOT@/bench/checks/calc-add/check.sh" > "@LEAK@/read" 2>/dev/null; echo planted > "@LEAK@/wrote" 2>/dev/null; d=$(mktemp -d) && rmdir "$d" && add() { echo $(($1 + $2)); }\n' > lib.sh ;;
     esac
     reading 0 "done" ;;
 esac
@@ -84,8 +84,13 @@ type runnerFixture struct {
 // file and the fake harness script. vars override @WEEK@ and @COST@.
 func newRunnerFixture(t *testing.T, vars ...string) *runnerFixture {
 	f := newFixture(t)
-	f.save(t, defaultManifest())
 	dir := t.TempDir()
+	for i := 0; i+1 < len(vars); i += 2 {
+		if vars[i] == "@CHECK@" {
+			f.check = strings.ReplaceAll(vars[i+1], "@OUTSIDE@", dir)
+		}
+	}
+	f.save(t, defaultManifest())
 	r := &runnerFixture{fixture: f, out: &bytes.Buffer{}, launches: filepath.Join(dir, "launches"), leak: filepath.Join(dir, "leak")}
 	os.MkdirAll(r.leak, 0o755)
 	// Overrides come first: a replacer takes the first pair that matches.
@@ -277,6 +282,19 @@ func TestCheckPhaseConfinesPlantedCode(t *testing.T) {
 	t.Logf("planted payload: pass=%t check_confined=%t files written outside the checkout=%d", v.Pass, v.CheckConfined, len(left))
 	if !v.Pass || !v.CheckConfined || len(left) != 0 {
 		t.Fatalf("pass=%t confined=%t, and the payload wrote %v outside the checkout", v.Pass, v.CheckConfined, left)
+	}
+}
+
+func TestControlRefusesAScoringEnvironmentTheLandedChangeCannotPass(t *testing.T) {
+	// The check passes verify's unconfined run but writes outside its checkout, which the
+	// confined scoring run denies: the control must catch it before any worker launches.
+	r := newRunnerFixture(t, "@CHECK@", goodCheck+"echo probe > '@OUTSIDE@/written' || exit 1\necho examined=1\n")
+	if _, ok := confineCheck("true", t.TempDir(), nil); !ok {
+		t.Skip("no working check confinement on this platform or inside this sandbox")
+	}
+	err := Run(context.Background(), r.cfg, SweepOptions{Arms: "fixer", Repeats: 1, BudgetUSD: 5})
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "at landed_sha in the scoring environment") || r.launched() != 0 {
+		t.Fatalf("err %v after %d launches, want the control's refusal before any launch\n%s", err, r.launched(), r.out)
 	}
 }
 

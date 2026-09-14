@@ -60,19 +60,20 @@ func refusef(format string, a ...any) error {
 
 type session struct {
 	Config
-	log      *log.Log
-	profile  *Profile
-	manifest *Manifest
-	tasks    map[string]*Task
-	ids      []string          // every task id in the corpus, sorted
-	tokens   map[string]string // by adapter; values are injected and never written
-	realHome string
-	path     string   // the worker's PATH
-	tool     []string // toolchain directories re-allowed inside the denial
-	verified map[string]verifiedExits
-	corpSHA  string
-	repos    map[string]repoFacts
-	weekUsed *float64
+	log        *log.Log
+	profile    *Profile
+	manifest   *Manifest
+	tasks      map[string]*Task
+	ids        []string          // every task id in the corpus, sorted
+	tokens     map[string]string // by adapter; values are injected and never written
+	realHome   string
+	path       string   // the worker's PATH
+	tool       []string // toolchain directories re-allowed inside the denial
+	verified   map[string]verifiedExits
+	controlled map[string]bool // tasks whose check passed at landed_sha in this sweep
+	corpSHA    string
+	repos      map[string]repoFacts
+	weekUsed   *float64
 }
 
 type repoFacts struct {
@@ -363,6 +364,13 @@ func (s *session) sweep(ctx context.Context, runs []plannedRun, tasks []*Task, b
 	}
 	if err := s.verify(ctx, tasks); err != nil {
 		return nil, err
+	}
+	// Every free check before the first paid one: the scoring environment's control, then the
+	// probe.
+	for _, t := range tasks {
+		if err := s.control(ctx, t); err != nil {
+			return nil, err
+		}
 	}
 	probeSeq, reading, err := s.probe(ctx, runs[0].arm, tasks[0], true, runs[0].cap)
 	if err != nil {
@@ -685,11 +693,12 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 }
 
 // score runs the hidden check on base_sha plus the worker's changes, in a fresh export the
-// worker never touched, after the worker has exited (a5 section 2.16).
+// worker never touched, after the worker has exited (a5 section 2.16). The changed files are
+// kept in the run's record, so a run can be scored again without running it again.
 func (s *session) score(ctx context.Context, w *workspace, mirror string, task *Task) (int, int, int, bool, error) {
-	dir := w.work + ".check"
-	defer os.RemoveAll(dir)
-	co, err := newCheckout(ctx, mirror, dir, task.BaseSHA, nil)
+	base := w.work + ".base"
+	defer os.RemoveAll(base)
+	co, err := newCheckout(ctx, mirror, base, task.BaseSHA, nil)
 	if err != nil {
 		return 0, 0, 0, false, err
 	}
@@ -697,37 +706,89 @@ func (s *session) score(ctx context.Context, w *workspace, mirror string, task *
 	if err != nil {
 		return 0, 0, 0, false, err
 	}
-	if co, err = applyChanges(co, changes); err != nil {
+	if err := keepChanges(filepath.Join(w.record, "changes"), changes); err != nil {
 		return 0, 0, 0, false, err
 	}
-	var paths []string
+	rc, examined, confined, err := s.runCheck(ctx, mirror, task, task.BaseSHA, changes, w.work+".check", w.record, "check")
+	return rc, examined, symlinks, confined, err
+}
+
+// control runs the confined check at landed_sha once per task in a sweep, before the first
+// paid call of the sweep: a check environment that cannot pass the landed change would
+// score every arm red, which is a failed control and never a reading (R39).
+func (s *session) control(ctx context.Context, task *Task) error {
+	mirror, err := ensureMirror(ctx, filepath.Join(s.Root, "bench", "repos"), task.Repository, task.BaseSHA, task.LandedSHA)
+	if err != nil {
+		return err
+	}
+	logs := filepath.Join(s.Root, "bench", "runs", fmt.Sprintf("%s.control.%s", task.ID, s.Now().UTC().Format("20060102T150405.000Z")))
+	if err := os.MkdirAll(logs, 0o700); err != nil {
+		return err
+	}
+	rc, examined, confined, err := s.runCheck(ctx, mirror, task, task.LandedSHA, nil, filepath.Join(s.Root, "bench", "work", filepath.Base(logs)), logs, "control")
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(s.Out, "control: task=%s check at landed_sha exit=%d examined=%d confined=%t\n", task.ID, rc, examined, confined)
+	if rc != 0 || examined <= 0 {
+		return refusef("task %s: the hidden check exits %d with examined=%d at landed_sha in the scoring environment (log %s), so no run of it can be scored", task.ID, rc, examined, filepath.Join(logs, "control.log"))
+	}
+	return nil
+}
+
+// runCheck exports sha plus changes into dir, runs setup, and runs the hidden check confined.
+func (s *session) runCheck(ctx context.Context, mirror string, task *Task, sha string, changes []change, dir, logs, name string) (int, int, bool, error) {
+	defer os.RemoveAll(dir)
+	co, err := newCheckout(ctx, mirror, dir, sha, nil)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if co, err = applyChanges(co, changes); err != nil {
+		return 0, 0, false, err
+	}
+	if strings.TrimSpace(task.Setup) != "" {
+		if rc := co.sh(ctx, task.Setup, nil, setupTimeout, filepath.Join(logs, name+"-setup.log")); rc != 0 {
+			return rc, 0, false, nil
+		}
+	}
+	if err := copyDir(filepath.Join(s.Root, "bench", "checks", task.ID), filepath.Join(co.dir, ".bench-check")); err != nil {
+		return 0, 0, false, err
+	}
+	logPath := filepath.Join(logs, name+".log")
+	// The check needs the host's toolchain, so only the answer keys are denied here, not
+	// the whole home; writes are what keep a planted copy from reaching a later run.
+	command, confined := confineCheck("sh .bench-check/check.sh", co.dir, append([]string{s.Root}, s.profile.DenyRead...))
+	if err := os.MkdirAll(filepath.Join(co.dir, ".tmp"), 0o700); err != nil {
+		return 0, 0, false, err
+	}
+	env := append([]string{"TMPDIR=" + filepath.Join(co.dir, ".tmp")}, checkEnv...)
+	rc := co.sh(ctx, command, env, checkTimeout, logPath)
+	return rc, lastExamined(logPath), confined, nil
+}
+
+// keepChanges writes the changed files under dir and their list, marked M or D, beside it.
+func keepChanges(dir string, changes []change) error {
+	var list []string
 	for _, c := range changes {
 		mark := "M"
 		if c.deleted {
 			mark = "D"
+		} else {
+			p := filepath.Join(dir, "files", filepath.FromSlash(c.path))
+			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(p, c.content, 0o600); err != nil {
+				return err
+			}
 		}
-		paths = append(paths, mark+" "+c.path)
+		list = append(list, mark+" "+c.path)
 	}
-	sort.Strings(paths)
-	_ = os.WriteFile(filepath.Join(w.record, "changes.txt"), []byte(strings.Join(paths, "\n")+"\n"), 0o600)
-	if strings.TrimSpace(task.Setup) != "" {
-		if rc := co.sh(ctx, task.Setup, nil, setupTimeout, filepath.Join(w.record, "check-setup.log")); rc != 0 {
-			return rc, 0, symlinks, false, nil
-		}
+	sort.Strings(list)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
 	}
-	if err := copyDir(filepath.Join(s.Root, "bench", "checks", task.ID), filepath.Join(co.dir, ".bench-check")); err != nil {
-		return 0, 0, 0, false, err
-	}
-	logPath := filepath.Join(w.record, "check.log")
-	// The check needs the host's toolchain, so only the answer keys are denied here, not
-	// the whole home; writes are what keep a planted copy from reaching a later run.
-	command, confined := confineCheck("sh .bench-check/check.sh", co.dir, append([]string{s.Root}, s.profile.DenyRead...))
-	env := append([]string{"TMPDIR=" + filepath.Join(co.dir, ".tmp")}, checkEnv...)
-	if err := os.MkdirAll(filepath.Join(co.dir, ".tmp"), 0o700); err != nil {
-		return 0, 0, 0, false, err
-	}
-	rc := co.sh(ctx, command, env, checkTimeout, logPath)
-	return rc, lastExamined(logPath), symlinks, confined, nil
+	return os.WriteFile(filepath.Join(dir, "list.txt"), []byte(strings.Join(list, "\n")+"\n"), 0o600)
 }
 
 func applyChanges(co *checkout, changes []change) (*checkout, error) {

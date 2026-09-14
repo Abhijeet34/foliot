@@ -3,6 +3,7 @@ package bench
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -23,7 +24,9 @@ func confineCheck(command, checkout string, denied []string) (string, bool) {
 		fmt.Fprintf(&p, "(deny file-read* (subpath %s))", sbplString(d))
 	}
 	fmt.Fprintf(&p, "(allow file-read* (subpath %s))", sbplString(checkout))
-	fmt.Fprintf(&p, "(deny file-write*)(allow file-write* (subpath %s) (literal \"/dev/null\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))", sbplString(checkout))
+	// mktemp -d under sandbox-exec ignores TMPDIR and uses the per-user temp directory, so
+	// writes there are allowed; every worker's run profile denies reading it back.
+	fmt.Fprintf(&p, "(deny file-write*)(allow file-write* (subpath %s) (subpath %s) (literal \"/dev/null\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))", sbplString(checkout), sbplString(userTemp()))
 	return sandboxExec + " -p " + shellQuote(p.String()) + " sh -c " + shellQuote(command), true
 }
 
@@ -35,6 +38,20 @@ func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''
 
 // seatbeltWorks applies an empty profile once: inside another sandbox, sandbox-exec cannot
 // apply one, and the verdict then records the check as unconfined rather than failing it.
+// userTemp is the per-user temp directory with its symlinks resolved, as Seatbelt matches
+// real paths.
+var userTemp = sync.OnceValue(func() string {
+	out, err := exec.Command("getconf", "DARWIN_USER_TEMP_DIR").Output()
+	if err != nil {
+		return "/nonexistent"
+	}
+	dir, err := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+	if err != nil {
+		return "/nonexistent"
+	}
+	return dir
+})
+
 var seatbeltWorks = sync.OnceValue(func() bool {
 	return exec.Command(sandboxExec, "-p", "(version 1)(allow default)", "/usr/bin/true").Run() == nil
 })
