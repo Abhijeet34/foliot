@@ -399,6 +399,7 @@ func TestTreeChanges(t *testing.T) {
 	write(t, filepath.Join(worker, "sub", "added.txt"), "a")
 	write(t, filepath.Join(worker, ".git", "config"), "[core]\n\tfsmonitor = evil\n")
 	write(t, filepath.Join(worker, "node_modules", "dep.js"), "x")
+	write(t, filepath.Join(worker, "sub", "node_modules", "dep.js"), "x")
 	os.Symlink("/etc/passwd", filepath.Join(worker, "link"))
 	changes, symlinks, err := treeChanges(base, worker)
 	if err != nil {

@@ -60,9 +60,10 @@ func assertHistoryFree(ctx context.Context, dir, landed string) CheckoutHistory 
 	return h
 }
 
-// skippedTop are the top-level names the worker's tree is compared without: git's own
-// directory, and the dependency directory setup recreates in the check's checkout.
-var skippedTop = map[string]bool{".git": true, "node_modules": true}
+// skippedDirNames are directory names skipped at any depth: git's own directory, and
+// the dependency directory setup recreates in the check's checkout (including nested
+// occurrences, such as an npm workspace package's own node_modules).
+var skippedDirNames = map[string]bool{".git": true, "node_modules": true}
 
 // treeChanges compares the worker's tree against a fresh export of base_sha without
 // running anything in the worker's checkout: a git command there would honour the
@@ -79,7 +80,7 @@ func treeChanges(base, worker string) (changes []change, symlinks int, err error
 			return nil
 		}
 		if d.IsDir() {
-			if skippedTop[rel] || d.Name() == ".git" {
+			if skippedDirNames[d.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
