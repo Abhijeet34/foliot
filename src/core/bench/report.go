@@ -88,12 +88,11 @@ func Report(o ReportOptions) error {
 
 	arms := o.Arms
 	if len(arms) == 0 {
-		for _, a := range Arms {
-			for _, r := range runs {
-				if r.Run.Arm == a.Name {
-					arms = append(arms, a.Name)
-					break
-				}
+		seen := map[string]bool{}
+		for _, r := range runs { // in the order each arm first ran
+			if !seen[r.Run.Arm] {
+				seen[r.Run.Arm] = true
+				arms = append(arms, r.Run.Arm)
 			}
 		}
 	}

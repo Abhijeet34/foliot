@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	tokenEnv = "CLAUDE_CODE_OAUTH_TOKEN"
 	// workerDeadline bounds one run's harness process; a5 section 1.1 has every process
 	// the orchestrator starts carry one, and names this one nowhere. Declared here.
 	workerDeadline = 60 * time.Minute
@@ -28,26 +27,24 @@ const (
 	estimateTasks = 5
 )
 
-// workerTools are the harness tools a bare arm gets: enough to read, edit and run the
-// repository's suite. The web tools and subagents are left out, and the web tools are
-// also denied in the run profile.
-var workerTools = "Bash,Read,Edit,Write,Grep,Glob"
+// gateName is every bare arm's gate: none runs (a5 section 2.16).
+const gateName = "none"
 
 // Config is what every runner command shares.
 type Config struct {
-	Root      string
-	Corpus    string
-	Harness   string // path to the claude binary
-	TokenFile string // the subscription token; its value is never written anywhere
-	Now       func() time.Time
-	Out       io.Writer
+	Root   string
+	Corpus string
+	// Adapters are the harnesses this binary has, by name; an arm names one.
+	Adapters map[string]Harness
+	Now      func() time.Time
+	Out      io.Writer
 	// Getenv reads the host environment; tests replace it.
 	Getenv func(string) string
 }
 
 // SweepOptions select a bench run or a bench estimate.
 type SweepOptions struct {
-	Arms      []Arm
+	Arms      string   // a comma-separated list of the profile's arm names
 	Tasks     []string // empty means the whole corpus
 	Repeats   int
 	BudgetUSD float64 // 0 on estimate, which is bounded by its caps
@@ -64,14 +61,14 @@ func refusef(format string, a ...any) error {
 type session struct {
 	Config
 	log      *log.Log
+	profile  *Profile
 	manifest *Manifest
 	tasks    map[string]*Task
-	ids      []string // every task id in the corpus, sorted
-	token    string
+	ids      []string          // every task id in the corpus, sorted
+	tokens   map[string]string // by adapter; values are injected and never written
 	realHome string
 	path     string   // the worker's PATH
 	tool     []string // toolchain directories re-allowed inside the denial
-	uid      int
 	verified map[string]Result
 	corpSHA  string
 	repos    map[string]repoFacts
@@ -90,7 +87,12 @@ func open(cfg Config) (*session, error) {
 	if cfg.Getenv == nil {
 		cfg.Getenv = os.Getenv
 	}
-	s := &session{Config: cfg, tasks: map[string]*Task{}, verified: map[string]Result{}, repos: map[string]repoFacts{}, uid: os.Getuid()}
+	s := &session{Config: cfg, tasks: map[string]*Task{}, tokens: map[string]string{}, verified: map[string]Result{}, repos: map[string]repoFacts{}}
+	p, err := LoadProfile(cfg.Root, cfg.Adapters)
+	if err != nil {
+		return nil, err
+	}
+	s.profile = p
 	corpusDir := filepath.Join(cfg.Root, "bench", "corpus", cfg.Corpus)
 	m, err := LoadManifest(filepath.Join(corpusDir, "corpus.json"))
 	if err != nil {
@@ -111,8 +113,12 @@ func open(cfg Config) (*session, error) {
 	if !filepath.IsAbs(s.realHome) {
 		return nil, refusef("HOME is %q, so the run profile has no real home to deny", s.realHome)
 	}
-	if s.token, err = readToken(cfg.TokenFile); err != nil {
-		return nil, err
+	for _, a := range p.Arms {
+		if _, ok := s.tokens[a.Adapter]; !ok {
+			if s.tokens[a.Adapter], err = readToken(p.Credentials[a.Adapter]); err != nil {
+				return nil, err
+			}
+		}
 	}
 	s.path, s.tool = toolchain(cfg.Getenv("PATH"), s.realHome, cfg.Root)
 	if s.log, err = log.Open(cfg.Root, cfg.Now); err != nil {
@@ -122,27 +128,6 @@ func open(cfg Config) (*session, error) {
 }
 
 func (s *session) close() { s.log.Close() }
-
-// readToken refuses a token file anyone but its owner can read, and returns the value
-// only to the caller that injects it into the harness's environment.
-func readToken(path string) (string, error) {
-	fi, err := os.Lstat(path)
-	if err != nil {
-		return "", refusef("token file: %v", err)
-	}
-	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0 {
-		return "", refusef("token file %s must be a regular file of mode 0600, is %v", path, fi.Mode())
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", refusef("token file: %v", err)
-	}
-	tok := strings.TrimSpace(string(b))
-	if tok == "" || strings.ContainsAny(tok, " \n\t") {
-		return "", refusef("token file %s does not hold one token", path)
-	}
-	return tok, nil
-}
 
 // toolchain builds the worker's PATH from the host's: an entry under the real home or the
 // root is dropped, since the sandbox denies it, except the directory a version-manager
@@ -285,13 +270,17 @@ func Run(ctx context.Context, cfg Config, o SweepOptions) error {
 		return err
 	}
 	defer s.close()
+	arms, err := s.profile.ParseArms(o.Arms)
+	if err != nil {
+		return err
+	}
 	tasks, err := s.selectTasks(o.Tasks)
 	if err != nil {
 		return err
 	}
-	runs := plan(o.Arms, tasks, o.Repeats, o.CapUSD)
-	projected, basis, err := s.projection(runs, o.Arms, len(tasks), o.Repeats, o.BudgetUSD)
-	fmt.Fprintf(s.Out, "plan: runs=%d arms=%s tasks=%d repeats=%d projected_usd=%.2f basis=%s budget_usd=%.2f\n", len(runs), armList(o.Arms), len(tasks), o.Repeats, projected, basis, o.BudgetUSD)
+	runs := plan(arms, tasks, o.Repeats, o.CapUSD)
+	projected, basis, err := s.projection(runs, arms, len(tasks), o.Repeats, o.BudgetUSD)
+	fmt.Fprintf(s.Out, "plan: runs=%d arms=%s tasks=%d repeats=%d projected_usd=%.2f basis=%s budget_usd=%.2f\n", len(runs), armList(arms), len(tasks), o.Repeats, projected, basis, o.BudgetUSD)
 	if err != nil {
 		return err
 	}
@@ -307,19 +296,23 @@ func Estimate(ctx context.Context, cfg Config, o SweepOptions) error {
 		return err
 	}
 	defer s.close()
+	arms, err := s.profile.ParseArms(o.Arms)
+	if err != nil {
+		return err
+	}
 	ids := s.ids[:min(estimateTasks, len(s.ids))]
 	tasks, err := s.selectTasks(ids)
 	if err != nil {
 		return err
 	}
-	runs := plan(o.Arms, tasks, 1, o.CapUSD)
-	fmt.Fprintf(s.Out, "estimate: runs=%d arms=%s tasks=%s\n", len(runs), armList(o.Arms), strings.Join(ids, ","))
+	runs := plan(arms, tasks, 1, o.CapUSD)
+	fmt.Fprintf(s.Out, "estimate: runs=%d arms=%s tasks=%s\n", len(runs), armList(arms), strings.Join(ids, ","))
 	costs, err := s.sweep(ctx, runs, tasks, 0)
 	if err != nil {
 		return err
 	}
 	est := log.BenchEstimate{Corpus: s.Corpus, Repeats: o.Repeats, Tasks: ids, MeanCostUSD: map[string]float64{}, CorpusTasks: len(s.ids)}
-	for _, a := range o.Arms {
+	for _, a := range arms {
 		c := costs[a.Name]
 		if len(c) != len(tasks) {
 			return refusef("arm %s: %d of %d runs have a known cost, so no mean is measured", a.Name, len(c), len(tasks))
@@ -395,7 +388,7 @@ func (s *session) newWorkspace(task *Task, label string) (*workspace, error) {
 	id := fmt.Sprintf("%s.%s.%s", task.ID, label, s.Now().UTC().Format("20060102T150405.000Z"))
 	w := &workspace{id: id, work: filepath.Join(s.Root, "bench", "work", id), record: filepath.Join(s.Root, "bench", "runs", id)}
 	w.repo = filepath.Join(w.work, "repo")
-	for _, d := range []string{"home/.claude", "config", "state", "cache", "tmp", "codex"} {
+	for _, d := range []string{"home", "config", "state", "cache", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(w.work, d), 0o700); err != nil {
 			return nil, err
 		}
@@ -408,8 +401,8 @@ func (s *session) newWorkspace(task *Task, label string) (*workspace, error) {
 	return w, os.WriteFile(filepath.Join(w.work, "gitconfig"), []byte(gitconfig), 0o600)
 }
 
-func (s *session) isolation(w *workspace) Isolation {
-	return Isolation{Root: s.Root, RealHome: s.realHome, Run: w.work, Toolchain: s.tool, TmpDirs: tmpEntries("/private/tmp", s.uid)}
+func (s *session) isolation(w *workspace) *Isolation {
+	return newIsolation(s.Root, s.realHome, w.work, s.tool, s.profile.DenyRead)
 }
 
 func (s *session) env(w *workspace) []string {
@@ -420,20 +413,11 @@ func (s *session) env(w *workspace) []string {
 		"XDG_STATE_HOME=" + filepath.Join(w.work, "state"),
 		"XDG_CACHE_HOME=" + filepath.Join(w.work, "cache"),
 		"TMPDIR=" + filepath.Join(w.work, "tmp"),
-		"CLAUDE_CODE_TMPDIR=" + filepath.Join(w.work, "tmp"),
-		"CODEX_HOME=" + filepath.Join(w.work, "codex"),
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=" + filepath.Join(w.work, "gitconfig"),
 		"GIT_TERMINAL_PROMPT=0",
-		"DISABLE_AUTOUPDATER=1",
-		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
-		"DISABLE_TELEMETRY=1",
-		// Measured 2026-09-14: corpus v1's visible suite runs 306 s against the harness's
-		// 120 s default Bash timeout, which would push every arm's suite to the background.
-		"BASH_DEFAULT_TIMEOUT_MS=600000",
 		// npm's update check reaches the registry, which the run profile denies.
 		"NPM_CONFIG_UPDATE_NOTIFIER=false",
-		tokenEnv + "=" + s.token,
 	}
 	for _, k := range []string{"LANG", "LC_ALL", "USER", "LOGNAME", "SHELL", "TERM"} {
 		if v := s.Getenv(k); v != "" {
@@ -459,14 +443,6 @@ func (s *session) prepare(ctx context.Context, task *Task, label string) (*works
 	return w, mirror, assertHistoryFree(ctx, w.repo, task.LandedSHA), nil
 }
 
-func (s *session) writeProfile(w *workspace) error {
-	b, err := s.isolation(w).settings(tokenEnv)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(w.work, "home", ".claude", "settings.json"), b, 0o600)
-}
-
 // probe runs the isolation probe (Fable critique k3 section 1.3 item 1) and records it.
 func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool, capUSD float64) (int64, ProbeReading, error) {
 	w, mirror, _, err := s.prepare(ctx, task, "probe-"+arm.Name)
@@ -474,23 +450,16 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 		return 0, ProbeReading{}, err
 	}
 	defer os.RemoveAll(w.work)
-	mode, permissions := "sandbox", "acceptEdits"
-	if isolated {
-		if err := s.writeProfile(w); err != nil {
-			return 0, ProbeReading{}, err
-		}
-	} else {
-		// The state the critique measured: no sandbox, and a worker whose shell runs
-		// unprompted, which a bare arm needs to run its suite. Measured 2026-09-14: with no
-		// profile and acceptEdits, headless Bash refuses `npm test` as well as the check, so
-		// that mode is not a runnable arm and proves nothing about isolation.
-		mode, permissions = "absent", "bypassPermissions"
+	mode, iso := "sandbox", s.isolation(w)
+	if !isolated {
+		mode, iso = "absent", nil
 	}
 	diff, err := gitOut(ctx, mirror, "diff", "--no-color", "--no-ext-diff", "--unified=0", task.BaseSHA, task.LandedSHA)
 	if err != nil {
 		return 0, ProbeReading{}, err
 	}
-	st, _, err := s.launch(ctx, w, arm, capUSD, permissions, probePrompt(s.Root, task))
+	h := s.Adapters[arm.Adapter]
+	st, _, err := s.launch(ctx, w, arm, capUSD, iso, probePrompt(s.Root, task, h.CredentialEnv()))
 	if err != nil {
 		return 0, ProbeReading{}, err
 	}
@@ -498,15 +467,12 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 	if err != nil {
 		return 0, ProbeReading{}, err
 	}
-	reading := judgeProbe(check, answerLines(diff), s.token, st)
+	reading := judgeProbe(check, answerLines(diff), s.tokens[arm.Adapter], st)
 	p := log.BenchProbe{
 		Corpus: s.Corpus, Task: task.ID, Arm: arm.Name, Model: arm.Model, Isolation: mode,
 		CheckLines: reading.CheckLines, LinesSeen: reading.LinesSeen, Denials: reading.Denials,
 		Attempts: reading.Attempts, DiffLines: reading.DiffLines, DiffSeen: reading.DiffSeen, TokenSeen: reading.TokenSeen,
-		Proven: isolated && reading.proven(), Run: rel(s.Root, w.record),
-	}
-	if st.Result != nil {
-		p.CostUSD = st.Result.TotalCostUSD
+		Proven: isolated && reading.proven(), Run: rel(s.Root, w.record), CostUSD: st.CostUSD,
 	}
 	seq, err := s.log.Append(log.Entry{Type: "bench.probe", Actor: "bench", Data: p,
 		Evidence: []log.Evidence{{Kind: "file", Ref: rel(s.Root, filepath.Join(w.record, "stream.jsonl"))}}})
@@ -525,15 +491,16 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 // Probe is foliot bench probe: one isolation probe, recorded. Without isolation it is the
 // red half of the proof and exits non-zero when the check reached the transcript.
 func Probe(ctx context.Context, cfg Config, armName, taskID string, isolated bool, capUSD float64) error {
-	arm, ok := armByName(armName)
-	if !ok {
-		return refusef("unknown arm %q; the arms are %s", armName, armNames())
-	}
 	s, err := open(cfg)
 	if err != nil {
 		return err
 	}
 	defer s.close()
+	arms, err := s.profile.ParseArms(armName)
+	if err != nil {
+		return err
+	}
+	arm := arms[0]
 	if taskID == "" {
 		taskID = s.ids[0]
 	}
@@ -555,7 +522,7 @@ func Probe(ctx context.Context, cfg Config, armName, taskID string, isolated boo
 }
 
 // launch runs the harness headless in the workspace and reads its transcript.
-func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD float64, permissions, prompt string) (*Stream, Observed, error) {
+func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD float64, iso *Isolation, prompt string) (*Reading, Observed, error) {
 	if err := os.WriteFile(filepath.Join(w.record, "prompt.md"), []byte(prompt), 0o600); err != nil {
 		return nil, Observed{}, err
 	}
@@ -571,24 +538,24 @@ func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD floa
 	}
 	defer errLog.Close()
 
+	h := s.Adapters[arm.Adapter]
+	c, err := h.Launch(Launch{
+		Home: filepath.Join(w.work, "home"), Tmp: filepath.Join(w.work, "tmp"), Checkout: w.repo,
+		Model: arm.Model, CapUSD: capUSD, Prompt: prompt, Credential: s.tokens[arm.Adapter], Isolation: iso,
+	})
+	if err != nil {
+		return nil, Observed{}, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, workerDeadline)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, s.Harness, "-p", prompt,
-		"--output-format", "stream-json", "--verbose",
-		"--model", arm.Model,
-		"--max-budget-usd", fmt.Sprintf("%.2f", capUSD),
-		"--no-session-persistence", "--strict-mcp-config",
-		"--setting-sources", "user",
-		"--tools", workerTools,
-		"--permission-mode", permissions,
-	)
+	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...)
 	cmd.Dir = w.repo
-	cmd.Env = s.env(w)
+	cmd.Env = mergeEnv(s.env(w), c.Env)
 	cmd.Stdout, cmd.Stderr = out, errLog
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 10 * time.Second
-	obs := Observed{LoadAtStart: loadAverage(), Injected: billingKind}
+	obs := Observed{LoadAtStart: readLoadAverage()}
 	start := time.Now()
 	runErr := cmd.Run()
 	obs.WallMS = time.Since(start).Milliseconds()
@@ -602,14 +569,14 @@ func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD floa
 	}
 	var exit *exec.ExitError
 	if runErr != nil && !errors.As(runErr, &exit) {
-		return nil, obs, fmt.Errorf("launching %s: %w", s.Harness, runErr)
+		return nil, obs, fmt.Errorf("launching %s: %w", c.Argv[0], runErr)
 	}
 	f, err := os.Open(streamPath)
 	if err != nil {
 		return nil, obs, err
 	}
 	defer f.Close()
-	st, err := ReadStream(f)
+	st, err := h.Read(f)
 	if err != nil {
 		return nil, obs, err
 	}
@@ -631,10 +598,11 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 	publicSince, _ := gitOut(ctx, mirror, "show", "-s", "--format=%cs", task.LandedSHA)
 	facts := s.repoFacts(ctx, mirror, task)
 	v := s.verified[task.ID]
+	h := s.Adapters[r.arm.Adapter]
 	run := log.BenchRun{
 		Corpus: s.Corpus, CorpusSHA: s.corpSHA, Task: task.ID, Class: task.Class, Arm: r.arm.Name,
-		Adapter: adapterName, Gate: gateName, Repeat: r.repeat, Model: r.arm.Model, Provider: providerID,
-		Billing: billingKind, BaseSHA: task.BaseSHA, BaseExit: v.Base, LandedExit: v.Landed, Benchmark: true,
+		Adapter: h.Name(), Gate: gateName, Repeat: r.repeat, Model: r.arm.Model, Provider: r.arm.Provider,
+		Billing: h.Billing(), BaseSHA: task.BaseSHA, BaseExit: v.Base, LandedExit: v.Landed, Benchmark: true,
 		CapUSD: r.cap, IsolationProven: true, IsolationProbe: probeSeq,
 		HistoryFree: hist.Free(), LandedObjectExit: hist.LandedObjectExit,
 		ModelCutoff: r.arm.Cutoff, PublicSince: publicSince, Run: rel(s.Root, w.record),
@@ -652,19 +620,16 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 			return nil, fmt.Errorf("task %s: setup exited %d before launch (log %s)", task.ID, rc, setupLog)
 		}
 	}
-	if err := s.writeProfile(w); err != nil {
-		return nil, err
-	}
 	runSeq, err := s.log.Append(log.Entry{Type: "bench.run", Actor: "bench", Data: run})
 	if err != nil {
 		return nil, err
 	}
 
-	st, obs, err := s.launch(ctx, w, r.arm, r.cap, "acceptEdits", renderPrompt(task))
+	st, obs, err := s.launch(ctx, w, r.arm, r.cap, s.isolation(w), renderPrompt(task))
 	if err != nil {
 		return nil, err
 	}
-	cols := st.columns(obs, w.work, s.Root, s.realHome)
+	cols := st.columns(obs, h.Billing(), w.work, s.Root, s.realHome)
 	if st.Model != r.arm.Model {
 		// The harness ran another model than the arm names: the run is not this arm's.
 		cols["model_ran"] = st.Model
@@ -674,10 +639,9 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 		return nil, err
 	}
 	pass := checkExit == 0 && examined > 0 && st.Model == r.arm.Model
-	claimedDone := st.Result != nil && st.Result.Subtype == "success" && !st.Result.IsError
 	verdict := log.BenchVerdict{
 		Corpus: s.Corpus, Task: task.ID, Arm: r.arm.Name, Repeat: r.repeat,
-		Pass: pass, FalseClaim: claimedDone && !pass, Columns: map[string]any(cols),
+		Pass: pass, FalseClaim: st.ClaimedDone && !pass, Columns: cols,
 		CheckExit: checkExit, Examined: examined,
 		SymlinksSkipped: symlinks, WeekUsed: st.WeekUsed, HarnessVersion: st.Version, CheckConfined: confined,
 	}
@@ -734,7 +698,7 @@ func (s *session) score(ctx context.Context, w *workspace, mirror string, task *
 	logPath := filepath.Join(w.record, "check.log")
 	// The check needs the host's toolchain, so only the answer keys are denied here, not
 	// the whole home; writes are what keep a planted copy from reaching a later run.
-	command, confined := confineCheck("sh .bench-check/check.sh", co.dir, append([]string{s.Root}, critiqueDenied(s.realHome)...))
+	command, confined := confineCheck("sh .bench-check/check.sh", co.dir, append([]string{s.Root}, s.profile.DenyRead...))
 	env := append([]string{"TMPDIR=" + filepath.Join(co.dir, ".tmp")}, checkEnv...)
 	if err := os.MkdirAll(filepath.Join(co.dir, ".tmp"), 0o700); err != nil {
 		return 0, 0, 0, false, err
@@ -822,10 +786,6 @@ func renderPrompt(t *Task) string {
 // authorisation is the benchmark setting's block: what the worker may do without asking.
 const authorisation = `Authorised without asking: read and change any file in this working directory, run any command inside it, and commit locally. Not authorised: pushing, opening pull requests, or reaching the network; nobody will answer a question during this run. When the change is complete, stop.
 `
-
-func loadAverage() *float64 {
-	return readLoadAverage()
-}
 
 func fmtCost(c *float64) string {
 	if c == nil {

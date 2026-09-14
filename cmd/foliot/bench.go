@@ -9,11 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
 
+	claudecode "github.com/Abhijeet34/foliot/src/adapters/claude-code"
 	"github.com/Abhijeet34/foliot/src/core/bench"
 	"github.com/Abhijeet34/foliot/src/core/log"
 )
@@ -50,8 +50,9 @@ red half of the proof and always exits 1.
 }
 
 const benchTail = `
-<root> is $FOLIOT_HOME. The token is read from $FOLIOT_CLAUDE_OAUTH_FILE, default
-<root>/secrets/claude-oauth, mode 0600. The harness is $FOLIOT_CLAUDE, default claude on PATH.
+<root> is $FOLIOT_HOME. The arms, each arm's adapter, model, cutoff and cap, the extra paths
+a worker must not read, and each adapter's credential file (mode 0600) are read from
+<root>/profile/bench.json. The claude-code adapter runs $FOLIOT_CLAUDE, default claude on PATH.
 Exit: 0 done; 1 a refusal; 2 usage.
 `
 
@@ -107,13 +108,6 @@ func benchCommand(name string, args []string, getenv func(string) string, stdout
 	case *capUSD < 0:
 		return usageError("--cap-usd must not be negative")
 	}
-	var parsed []bench.Arm
-	if *arms != "" {
-		var err error
-		if parsed, err = bench.ParseArms(*arms); err != nil {
-			return usageError(err.Error())
-		}
-	}
 	root, err := log.Root(getenv)
 	if err != nil {
 		return usageError(err.Error())
@@ -123,22 +117,21 @@ func benchCommand(name string, args []string, getenv func(string) string, stdout
 
 	if name == "report" {
 		var names []string
-		for _, a := range parsed {
-			names = append(names, a.Name)
+		if *arms != "" {
+			names = strings.Split(*arms, ",")
 		}
 		return exitFor(name, bench.Report(bench.ReportOptions{Root: root, Corpus: *corpus, Arms: names, Tasks: tasks, Out: stdout}), stderr)
 	}
-	cfg := bench.Config{Root: root, Corpus: *corpus, Out: stdout, Getenv: getenv}
-	if cfg.TokenFile = getenv("FOLIOT_CLAUDE_OAUTH_FILE"); cfg.TokenFile == "" {
-		cfg.TokenFile = filepath.Join(root, "secrets", "claude-oauth")
-	}
-	if cfg.Harness = getenv("FOLIOT_CLAUDE"); cfg.Harness == "" {
-		if cfg.Harness, err = exec.LookPath("claude"); err != nil {
-			fmt.Fprintf(stderr, "foliot bench %s: no claude on PATH and FOLIOT_CLAUDE is unset\n", name)
-			return 1
+	binary := getenv("FOLIOT_CLAUDE")
+	if binary == "" {
+		binary, _ = exec.LookPath("claude") // a missing binary fails at launch, naming it
+		if binary == "" {
+			binary = "claude"
 		}
 	}
-	o := bench.SweepOptions{Arms: parsed, Tasks: tasks, Repeats: *repeats, BudgetUSD: *budget, CapUSD: *capUSD}
+	adapters := map[string]bench.Harness{"claude-code": claudecode.Adapter{Binary: binary}}
+	cfg := bench.Config{Root: root, Corpus: *corpus, Adapters: adapters, Out: stdout, Getenv: getenv}
+	o := bench.SweepOptions{Arms: *arms, Tasks: tasks, Repeats: *repeats, BudgetUSD: *budget, CapUSD: *capUSD}
 	switch name {
 	case "run":
 		err = bench.Run(ctx, cfg, o)

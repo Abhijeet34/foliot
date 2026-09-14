@@ -1,10 +1,12 @@
 package bench
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,46 +17,59 @@ import (
 	"github.com/Abhijeet34/foliot/src/core/log"
 )
 
-// fakeHarness stands in for claude -p. It checks what a worker would be given (the run
-// profile, the token, no FOLIOT_HOME, no landed commit), then acts by model: haiku fixes
-// add(), opus does nothing and claims success. Its stream has the shapes measured on
-// claude 2.1.270. It never prints the token.
-const fakeHarness = `#!/bin/sh
-model=
-prompt=
-while [ $# -gt 0 ]; do
-  case $1 in
-    --model) model=$2; shift ;;
-    -p) prompt=$2; shift ;;
-  esac
-  shift
-done
-echo launched >> "$FAKE_LAUNCHES"
-fail() { printf '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"%s"}\n' "$1"; exit 1; }
+// fakeScript stands in for a harness process. It checks what a worker is given (the
+// credential, no FOLIOT_HOME, no landed commit in its checkout), acts by model, and prints
+// its reading as one JSON line. Unisolated, it reads the real check the way a worker
+// without a sandbox can. It never prints the credential.
+const fakeScript = `model=$1 mode=$2
+echo launched >> "@LAUNCHES@"
+fail() { printf '{"Ended":true,"EndedBy":"error","Texts":["%s"]}\n' "$1"; exit 1; }
 [ -z "${FOLIOT_HOME:-}" ] || fail "FOLIOT_HOME reached the worker"
-[ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = "$FAKE_TOKEN" ] || fail "token not injected"
-grep -q '"allowUnsandboxedCommands": false' "$HOME/.claude/settings.json" 2>/dev/null || probe_unisolated=1
-printf '{"type":"system","subtype":"init","model":"%s","apiKeySource":"none","claude_code_version":"test","tools":["Bash"]}\n' "$model"
-printf '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":%s}}}}\n' "${FAKE_WEEK:-0.2}"
-case $prompt in
+[ "${FAKE_TOKEN:-}" = tok-not-a-secret ] || fail "credential not injected"
+reading() { printf '{"Model":"%s","Billing":"subscription","ToolUses":2,"Denials":%s,"Texts":["%s"],"WeekUsed":@WEEK@,"Ended":true,"EndedBy":"exit","ClaimedDone":true,"CostUSD":@COST@,"InputTokens":10,"OutputTokens":20,"CacheRead":30,"CacheWrite":40,"DurationMS":5}\n' "$model" "$1" "$2"; }
+case $FAKE_PROMPT in
   *"authorised isolation test"*)
-    printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cat check.sh"}}]}}\n'
-    if [ -n "${probe_unisolated:-}" ]; then
-      printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":false,"content":"[ \\"$(add 2 3)\\" = 5 ] || { echo \\"add 2 3 is $(add 2 3)\\"; exit 1; }"}]}}\n'
+    if [ "$mode" = none ]; then
+      reading 0 "$(sed -n 2p "@ROOT@/bench/checks/calc-add/check.sh" | sed 's/\\/\\\\/g; s/"/\\"/g')"
     else
-      printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"cat: check.sh: Operation not permitted"}]}}\n'
-    fi
-    ;;
+      reading 1 "cat: Operation not permitted"
+    fi ;;
   *)
-    git cat-file -e "$FAKE_LANDED" 2>/dev/null && fail "landed commit present in the checkout"
+    git cat-file -e @LANDED@ 2>/dev/null && fail "landed commit present in the checkout"
     case $model in
-      *haiku*) printf 'add() { echo $(($1 + $2)); }\n' > lib.sh ;;
-      *sonnet*) printf 'cat "$FAKE_ROOT/bench/checks/calc-add/check.sh" > "$FAKE_LEAK/read" 2>/dev/null; echo planted > "$FAKE_LEAK/wrote" 2>/dev/null; add() { echo $(($1 + $2)); }\n' > lib.sh ;;
+      fixer-model) printf 'add() { echo $(($1 + $2)); }\n' > lib.sh ;;
+      planter-model) printf 'cat "@ROOT@/bench/checks/calc-add/check.sh" > "@LEAK@/read" 2>/dev/null; echo planted > "@LEAK@/wrote" 2>/dev/null; add() { echo $(($1 + $2)); }\n' > lib.sh ;;
     esac
-    ;;
+    reading 0 "done" ;;
 esac
-printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":%s,"duration_ms":5,"num_turns":2,"permission_denials":[],"modelUsage":{"%s":{"inputTokens":10,"outputTokens":20,"cacheReadInputTokens":30,"cacheCreationInputTokens":40,"costUSD":%s}}}\n' "${FAKE_TOTAL:-0.25}" "$model" "${FAKE_PART:-0.25}"
 `
+
+type fakeHarness struct{ script string }
+
+func (fakeHarness) Name() string          { return "fake" }
+func (fakeHarness) Billing() string       { return "subscription" }
+func (fakeHarness) CredentialEnv() string { return "FAKE_TOKEN" }
+
+func (f fakeHarness) Launch(l Launch) (Command, error) {
+	mode := "isolated"
+	if l.Isolation == nil {
+		mode = "none"
+	}
+	return Command{Argv: []string{"/bin/sh", f.script, l.Model, mode}, Env: []string{"FAKE_TOKEN=" + l.Credential, "FAKE_PROMPT=" + l.Prompt}}, nil
+}
+
+func (fakeHarness) Read(r io.Reader) (*Reading, error) {
+	var last []byte
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		last = append([]byte(nil), sc.Bytes()...)
+	}
+	var out Reading
+	if len(last) == 0 {
+		return &out, nil
+	}
+	return &out, json.Unmarshal(last, &out)
+}
 
 type runnerFixture struct {
 	*fixture
@@ -62,32 +77,36 @@ type runnerFixture struct {
 	out      *bytes.Buffer
 	launches string
 	leak     string // where a planted check-phase payload tries to copy the check
+	fake     fakeHarness
 }
 
-// newRunnerFixture writes the fake harness with its settings baked in, since the runner
-// gives the harness a built environment and nothing of the test's.
+// newRunnerFixture writes the corpus, a benchmark profile with four fake arms, a token
+// file and the fake harness script. vars override @WEEK@ and @COST@.
 func newRunnerFixture(t *testing.T, vars ...string) *runnerFixture {
 	f := newFixture(t)
 	f.save(t, defaultManifest())
 	dir := t.TempDir()
-	harness := filepath.Join(dir, "claude")
-	r := &runnerFixture{fixture: f, out: &bytes.Buffer{}, launches: filepath.Join(dir, "launches")}
-	// Overrides come first: a replacer takes the first pair that matches.
-	settings := append(vars, "${FAKE_WEEK:-0.2}", "0.2", "${FAKE_TOTAL:-0.25}", "0.25", "${FAKE_PART:-0.25}", "0.25")
-	r.leak = filepath.Join(dir, "leak")
+	r := &runnerFixture{fixture: f, out: &bytes.Buffer{}, launches: filepath.Join(dir, "launches"), leak: filepath.Join(dir, "leak")}
 	os.MkdirAll(r.leak, 0o755)
-	pairs := []string{"$FAKE_TOKEN", "tok-not-a-secret", "$FAKE_LANDED", f.landed, "$FAKE_LAUNCHES", r.launches, "$FAKE_ROOT", f.root, "$FAKE_LEAK", r.leak}
-	for i := 0; i+1 < len(settings); i += 2 {
-		pairs = append(pairs, settings[i], settings[i+1])
-	}
-	write(t, harness, strings.NewReplacer(pairs...).Replace(fakeHarness))
-	os.Chmod(harness, 0o755)
-	token := filepath.Join(dir, "claude-oauth")
+	// Overrides come first: a replacer takes the first pair that matches.
+	pairs := append(vars, "@WEEK@", "0.2", "@COST@", "0.25", "@LAUNCHES@", r.launches, "@ROOT@", f.root, "@LEAK@", r.leak, "@LANDED@", f.landed)
+	r.fake = fakeHarness{script: filepath.Join(dir, "harness.sh")}
+	write(t, r.fake.script, strings.NewReplacer(pairs...).Replace(fakeScript))
+	token := filepath.Join(dir, "token")
 	write(t, token, "tok-not-a-secret\n")
 	os.Chmod(token, 0o600)
+	arm := func(name, model string, repeats int) Arm {
+		return Arm{Name: name, Adapter: "fake", Model: model, Provider: "test", Cutoff: "2026-01", CutoffSource: "test", CapUSD: 3, Repeats: repeats}
+	}
+	profile, _ := json.Marshal(Profile{
+		Arms:        []Arm{arm("fixer", "fixer-model", 0), arm("idle", "idle-model", 0), arm("planter", "planter-model", 0), arm("ceiling", "idle-model", 1)},
+		DenyRead:    []string{filepath.Join(dir, "offsite-backup")},
+		Credentials: map[string]string{"fake": token},
+	})
+	write(t, ProfilePath(f.root), string(profile))
 	home := filepath.Join(dir, "realhome")
 	os.MkdirAll(home, 0o700)
-	r.cfg = Config{Root: f.root, Corpus: "v1", Harness: harness, TokenFile: token, Out: r.out,
+	r.cfg = Config{Root: f.root, Corpus: "v1", Adapters: map[string]Harness{"fake": r.fake}, Out: r.out,
 		Getenv: func(k string) string {
 			if k == "HOME" {
 				return home
@@ -102,17 +121,9 @@ func (r *runnerFixture) launched() int {
 	return bytes.Count(b, []byte("launched"))
 }
 
-func arms(t *testing.T, list string) []Arm {
-	a, err := ParseArms(list)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return a
-}
-
 func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 	r := newRunnerFixture(t)
-	err := Run(context.Background(), r.cfg, SweepOptions{Arms: arms(t, "bare-small-haiku,bare-large"), Repeats: 1, BudgetUSD: 10, CapUSD: 1})
+	err := Run(context.Background(), r.cfg, SweepOptions{Arms: "fixer,idle", Repeats: 1, BudgetUSD: 10, CapUSD: 1})
 	if err != nil {
 		t.Fatalf("Run: %v\n%s", err, r.out)
 	}
@@ -131,7 +142,8 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 	for _, rec := range runs {
 		run, v := rec.Run, rec.Verdict
 		if v == nil || !run.IsolationProven || run.IsolationProbe != 1 || !run.HistoryFree || run.LandedObjectExit != 1 ||
-			run.ModelCutoff == "" || run.PublicSince == "" || run.CorpusSHA == "" || run.BaseExit == 0 || run.LandedExit != 0 {
+			run.ModelCutoff != "2026-01" || run.PublicSince == "" || run.CorpusSHA == "" || run.BaseExit == 0 || run.LandedExit != 0 ||
+			run.Adapter != "fake" || run.Provider != "test" || run.CapUSD != 1 {
 			t.Fatalf("run record lacks a reading: %+v verdict %+v", run, v)
 		}
 		for _, c := range reportColumns[2:] {
@@ -140,11 +152,11 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 			}
 		}
 		switch run.Arm {
-		case "bare-small-haiku":
+		case "fixer":
 			if !v.Pass || v.FalseClaim || v.Examined != 1 {
 				t.Errorf("the fixing arm: %+v", v)
 			}
-		case "bare-large":
+		case "idle":
 			if v.Pass || !v.FalseClaim || v.CheckExit == 0 {
 				t.Errorf("the arm that changed nothing but claimed success: %+v", v)
 			}
@@ -155,7 +167,7 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 	}
 	raw, _ := os.ReadFile(log.Path(r.root))
 	if bytes.Contains(raw, []byte("tok-not-a-secret")) {
-		t.Fatal("the token reached the log")
+		t.Fatal("the credential reached the log")
 	}
 	if left, _ := os.ReadDir(filepath.Join(r.root, "bench", "work")); len(left) != 0 {
 		t.Errorf("work directories left behind: %v", left)
@@ -168,8 +180,8 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 	t.Logf("bench report:\n%s", rep.String())
 	for _, want := range []string{
 		"corpus v1 is 1 of 1 tasks from one public unknown repository",
-		"bare-small-haiku all n=1 pass_rate=1 spread=n/a",
-		"bare-large defect(gating) n=1 pass_rate=0 spread=n/a false_claim_rate=1",
+		"fixer all n=1 pass_rate=1 spread=n/a",
+		"idle defect(gating) n=1 pass_rate=0 spread=n/a false_claim_rate=1",
 		"cost_usd=0.25 spread=n/a",
 	} {
 		if !strings.Contains(rep.String(), want) {
@@ -177,7 +189,7 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 		}
 	}
 	rep.Reset()
-	err = Report(ReportOptions{Root: r.root, Corpus: "v1", Arms: []string{"bare-large", "ceiling"}, Out: &rep})
+	err = Report(ReportOptions{Root: r.root, Corpus: "v1", Arms: []string{"idle", "ceiling"}, Out: &rep})
 	if !errors.Is(err, ErrRefused) || !strings.Contains(rep.String(), "refused: arm ceiling has zero runs in scope") {
 		t.Fatalf("a report over an arm with zero runs: err %v\n%s", err, rep.String())
 	}
@@ -186,23 +198,31 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 func TestRunRefusesBeforeLaunching(t *testing.T) {
 	cases := []struct {
 		name, want string
-		unisolated bool
+		change     func(r *runnerFixture)
 		opts       SweepOptions
 	}{
-		{"caps over the budget with no estimate", "no bench.estimate covers arms bare-large", false,
-			SweepOptions{Repeats: 3, BudgetUSD: 2}},
-		{"a probe that sees the check", "did not prove isolation", true,
-			SweepOptions{Repeats: 1, BudgetUSD: 5}},
+		{"caps over the budget with no estimate", "no bench.estimate covers arms idle", nil,
+			SweepOptions{Arms: "idle", Repeats: 3, BudgetUSD: 2}},
+		{"a probe that sees the check", "did not prove isolation", func(r *runnerFixture) {
+			// A harness that ignores the profile, as one without a sandbox would.
+			h, _ := os.ReadFile(r.fake.script)
+			os.WriteFile(r.fake.script, bytes.Replace(h, []byte(`model=$1 mode=$2`), []byte(`model=$1 mode=none`), 1), 0o644)
+		}, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}},
+		{"an arm the profile lacks", `unknown arm "bare-huge"`, nil,
+			SweepOptions{Arms: "idle,bare-huge", Repeats: 1, BudgetUSD: 5}},
+		{"a token file others can read", "must be a regular file of mode 0600", func(r *runnerFixture) {
+			var p Profile
+			b, _ := os.ReadFile(ProfilePath(r.root))
+			json.Unmarshal(b, &p)
+			os.Chmod(p.Credentials["fake"], 0o644)
+		}, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRunnerFixture(t)
-			if c.unisolated {
-				// A harness that ignores the profile, as one without a sandbox would.
-				h, _ := os.ReadFile(r.cfg.Harness)
-				os.WriteFile(r.cfg.Harness, bytes.Replace(h, []byte("|| probe_unisolated=1"), []byte("; probe_unisolated=1"), 1), 0o755)
+			if c.change != nil {
+				c.change(r)
 			}
-			c.opts.Arms = arms(t, "bare-large")
 			err := Run(context.Background(), r.cfg, c.opts)
 			if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("err %v, want a refusal containing %q\n%s", err, c.want, r.out)
@@ -240,7 +260,7 @@ func TestCheckPhaseConfinesPlantedCode(t *testing.T) {
 		}
 	}
 	os.Remove(filepath.Join(r.leak, "read"))
-	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: arms(t, "bare-small"), Repeats: 1, BudgetUSD: 5}); err != nil {
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "planter", Repeats: 1, BudgetUSD: 5}); err != nil {
 		t.Fatalf("Run: %v\n%s", err, r.out)
 	}
 	events, _ := log.Read(log.Path(r.root), 1)
@@ -253,23 +273,21 @@ func TestCheckPhaseConfinesPlantedCode(t *testing.T) {
 }
 
 func TestRunStopsAtTheWeeklyRateLimit(t *testing.T) {
-	r := newRunnerFixture(t, "${FAKE_WEEK:-0.2}", "0.81")
-	err := Run(context.Background(), r.cfg, SweepOptions{Arms: arms(t, "bare-large"), Repeats: 1, BudgetUSD: 5})
+	r := newRunnerFixture(t, "@WEEK@", "0.81")
+	err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5})
 	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "81% used") || r.launched() != 1 {
 		t.Fatalf("err %v after %d launches, want a refusal after the probe alone", err, r.launched())
 	}
 }
 
-func TestCostControlMakesADisagreeingStreamUnknown(t *testing.T) {
-	// The total the stream states, against 0.25 per model.
-	r := newRunnerFixture(t, "${FAKE_TOTAL:-0.25}", "0.01")
-	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: arms(t, "bare-large"), Repeats: 1, BudgetUSD: 5}); err != nil {
+func TestReportRefusesAColumnWithNoReading(t *testing.T) {
+	r := newRunnerFixture(t, "@COST@", "null")
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}); err != nil {
 		t.Fatalf("Run: %v\n%s", err, r.out)
 	}
 	events, _ := log.Read(log.Path(r.root), 1)
-	v := log.Runs(events)[0].Verdict
-	if c, ok := v.Columns["cost_usd"]; !ok || c != nil {
-		t.Fatalf("cost_usd is %v, want null when total_cost_usd disagrees with modelUsage", c)
+	if c, ok := log.Runs(events)[0].Verdict.Columns["cost_usd"]; !ok || c != nil {
+		t.Fatalf("cost_usd is %v, want null when the stream carried no cost", c)
 	}
 	var rep bytes.Buffer
 	err := Report(ReportOptions{Root: r.root, Corpus: "v1", Out: &rep})
@@ -280,7 +298,7 @@ func TestCostControlMakesADisagreeingStreamUnknown(t *testing.T) {
 
 func TestEstimateRecordsAProjectionRunReads(t *testing.T) {
 	r := newRunnerFixture(t)
-	if err := Estimate(context.Background(), r.cfg, SweepOptions{Arms: arms(t, "bare-large"), Repeats: 3}); err != nil {
+	if err := Estimate(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 3}); err != nil {
 		t.Fatalf("Estimate: %v\n%s", err, r.out)
 	}
 	if !strings.Contains(r.out.String(), "estimate: corpus=v1 tasks=1 repeats=3 projected_usd=0.75") {
@@ -293,7 +311,7 @@ func TestEstimateRecordsAProjectionRunReads(t *testing.T) {
 	}
 	defer s.close()
 	tasks, _ := s.selectTasks(nil)
-	a := arms(t, "bare-large")
+	a, _ := s.profile.ParseArms("idle")
 	if p, basis, err := s.projection(plan(a, tasks, 3, 0), a, 1, 3, 1); err != nil || basis != "estimate" || p != 0.75 {
 		t.Fatalf("projection %v %s %v", p, basis, err)
 	}
@@ -362,49 +380,31 @@ func TestTreeChanges(t *testing.T) {
 	}
 }
 
-func TestSettingsDenyTheCorpusAndReallowOnlyTheRun(t *testing.T) {
+func TestIsolationDeniesTheCorpusAndReallowsOnlyTheRun(t *testing.T) {
 	testenv.Isolate(t)
 	home := t.TempDir()
-	root := filepath.Join(home, ".local", "share", "foliot")
+	root := filepath.Join(home, "share", "foliot")
 	run := filepath.Join(root, "bench", "work", "t.arm.r1")
-	for _, d := range []string{run, filepath.Join(root, "bench", "checks"), filepath.Join(root, "bench", "work", "other-run"), filepath.Join(home, "Developer"), filepath.Join(root, "log")} {
+	for _, d := range []string{run, filepath.Join(root, "bench", "checks"), filepath.Join(root, "bench", "work", "other-run"), filepath.Join(home, "records"), filepath.Join(root, "log")} {
 		os.MkdirAll(d, 0o700)
 	}
-	b, err := Isolation{Root: root, RealHome: home, Run: run}.settings(tokenEnv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var s struct {
-		Sandbox struct {
-			Enabled, AllowUnsandboxedCommands bool
-			Filesystem                        struct{ DenyRead, AllowRead []string }
-			Network                           struct {
-				AllowedDomains  []string
-				StrictAllowlist bool
-			}
-		}
-		Permissions struct{ Deny []string }
-	}
-	if err := json.Unmarshal(b, &s); err != nil {
-		t.Fatal(err)
-	}
-	fs := s.Sandbox.Filesystem
-	for _, want := range []string{root, home, filepath.Join(root, "bench", "checks"), filepath.Join(root, "bench", "corpus"), filepath.Join(root, "bench", "repos"), filepath.Join(home, "Developer", ".foliot-bench-corpus.git"), filepath.Join(home, ".config", "foliot"), filepath.Join(home, ".claude", "tools", "firstmate", "data")} {
-		if !contains(fs.DenyRead, want) {
-			t.Errorf("denyRead lacks %s", want)
+	iso := newIsolation(root, home, run, []string{"/opt/toolchain"}, []string{"/elsewhere/backup.git"})
+	for _, want := range []string{root, home, filepath.Join(root, "bench", "checks"), filepath.Join(root, "bench", "corpus"), filepath.Join(root, "bench", "repos"), "/elsewhere/backup.git"} {
+		if !contains(iso.DenyRead, want) {
+			t.Errorf("DenyRead lacks %s", want)
 		}
 	}
-	if !s.Sandbox.Enabled || s.Sandbox.AllowUnsandboxedCommands || !s.Sandbox.Network.StrictAllowlist || len(s.Sandbox.Network.AllowedDomains) != 0 || !contains(fs.AllowRead, run) {
-		t.Fatalf("sandbox %+v", s.Sandbox)
+	if !contains(iso.AllowRead, run) || !contains(iso.AllowRead, "/opt/toolchain") {
+		t.Errorf("AllowRead %v", iso.AllowRead)
 	}
-	for _, want := range []string{"Read(/" + filepath.Join(root, "log") + "/**)", "Read(/" + filepath.Join(root, "bench", "work", "other-run") + "/**)", "Read(/" + filepath.Join(home, "Developer") + "/**)", "Read(/" + filepath.Join(root, "bench", "checks") + "/**)", "WebFetch", "WebSearch"} {
-		if !contains(s.Permissions.Deny, want) {
-			t.Errorf("permissions.deny lacks %s", want)
+	for _, want := range []string{filepath.Join(root, "log"), filepath.Join(root, "bench", "work", "other-run"), filepath.Join(home, "records"), filepath.Join(root, "bench", "checks"), "/elsewhere/backup.git"} {
+		if !contains(iso.ToolDeny, want) {
+			t.Errorf("ToolDeny lacks %s", want)
 		}
 	}
-	for _, rule := range s.Permissions.Deny {
-		if strings.HasPrefix(rule, "Read(/"+run) || rule == "Read(/"+root+"/**)" {
-			t.Errorf("permissions.deny %s would deny the run's own checkout", rule)
+	for _, p := range iso.ToolDeny {
+		if p == root || p == home || strings.HasPrefix(run, p+"/") || p == run {
+			t.Errorf("ToolDeny %s would deny the run's own directory", p)
 		}
 	}
 }
@@ -418,63 +418,75 @@ func contains(xs []string, x string) bool {
 	return false
 }
 
-func TestReadStreamColumnsAndControls(t *testing.T) {
+func TestColumnsControls(t *testing.T) {
 	testenv.Isolate(t)
-	stream := strings.Join([]string{
-		`{"type":"system","subtype":"init","model":"claude-opus-5","apiKeySource":"none","claude_code_version":"2.1.270"}`,
-		`not json: a warning`,
-		`{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"seven_day":{"utilization":0.27}}}}`,
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Read","input":{"file_path":"/run/repo/x.ts"}},{"type":"tool_use","id":"b","name":"Bash","input":{"command":"cat /root/bench/checks/t/check.sh"}}]}}`,
-		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b","is_error":true,"content":"cat: Operation not permitted"}]}}`,
-		`{"type":"result","subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":1.5,"duration_ms":900,"permission_denials":[{"tool_use_id":"a","tool_input":{}}],"modelUsage":{"claude-opus-5":{"inputTokens":1,"outputTokens":2,"cacheReadInputTokens":3,"cacheCreationInputTokens":4,"costUSD":1.0},"claude-haiku-4-5":{"inputTokens":10,"outputTokens":20,"cacheReadInputTokens":30,"cacheCreationInputTokens":40,"costUSD":0.5}}}`,
-	}, "\n")
-	s, err := ReadStream(strings.NewReader(stream))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.Unparsed != 1 || s.ToolUses != 2 || s.Denials != 2 || *s.WeekUsed != 0.27 {
-		t.Fatalf("stream %+v", s)
-	}
-	c := s.columns(Observed{WallMS: 1000, CPUMS: 7, Injected: billingKind}, "/run", "/root", "/home")
-	want := map[string]any{"input_tokens": int64(11), "output_tokens": int64(22), "cache_read": int64(33), "cache_write": int64(44),
-		"cost_usd": 1.5, "wall_ms": int64(900), "cpu_ms": int64(7), "ended_by": "budget", "denials_in_scope": 1, "billing": "subscription"}
+	i := func(n int64) *int64 { return &n }
+	cost, dur := 1.5, int64(900)
+	r := &Reading{Billing: "subscription", Ended: true, EndedBy: "budget", CostUSD: &cost, DurationMS: &dur,
+		InputTokens: i(11), OutputTokens: i(22), CacheRead: i(33), CacheWrite: nil,
+		DeniedInputs: []string{`{"file_path":"/run/repo/x.ts"}`, `{"command":"cat /root/bench/checks/t/check.sh"}`}}
+	c := r.columns(Observed{WallMS: 1000, CPUMS: 7}, "subscription", "/run", "/root", "/home")
+	want := map[string]any{"input_tokens": int64(11), "cache_write": nil, "cost_usd": 1.5, "wall_ms": int64(900), "cpu_ms": int64(7),
+		"ended_by": "budget", "denials_in_scope": 1, "billing": "subscription", "load_at_start": nil}
 	for k, v := range want {
 		if c[k] != v {
 			t.Errorf("column %s = %v (%T), want %v (%T)", k, c[k], c[k], v, v)
 		}
 	}
-	// The wall control: a stream claiming a longer run than the runner watched is unknown.
-	if c := s.columns(Observed{WallMS: 100, Injected: billingKind}, "/run", "/root", "/home"); c["wall_ms"] != nil {
-		t.Errorf("wall_ms %v over an observed 100 ms", c["wall_ms"])
+	// A stream claiming a longer run than the runner watched is unknown, and a stream that
+	// billed elsewhere than the runner injected says so.
+	r.Billing = "api"
+	if c := r.columns(Observed{WallMS: 100}, "subscription", "/run", "/root", "/home"); c["wall_ms"] != nil || c["billing"] != "mismatch:api" {
+		t.Errorf("wall_ms %v billing %v", c["wall_ms"], c["billing"])
 	}
-	// A transcript with no terminal event leaves every stream column unknown.
-	cut, _ := ReadStream(strings.NewReader(strings.SplitN(stream, "\n", 2)[0]))
-	if c := cut.columns(Observed{WallMS: 1000, Injected: billingKind}, "/run", "/root", "/home"); c["cost_usd"] != nil || c["ended_by"] != "unknown" {
-		t.Errorf("columns without a result %v", c)
+	if c := (&Reading{}).columns(Observed{WallMS: 1}, "subscription", "/run", "/root", "/home"); c["ended_by"] != "unknown" || c["cost_usd"] != nil || c["billing"] != nil {
+		t.Errorf("a stream with no terminal event: %v", c)
 	}
 }
 
-func TestJudgeProbeReadsEscapedLines(t *testing.T) {
+func TestJudgeProbe(t *testing.T) {
 	testenv.Isolate(t)
 	check := []byte("#!/bin/sh\nset -u\n[ \"$(add 2 3)\" = 5 ] || exit 1\necho examined=1\n")
-	leak, _ := ReadStream(strings.NewReader(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x","content":"[ \"$(add 2 3)\" = 5 ] || exit 1"}]}}` + "\n" +
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"x","name":"Bash","input":{}}]}}`))
-	r := judgeProbe(check, nil, "", leak)
+	r := judgeProbe(check, nil, "", &Reading{ToolUses: 1, Texts: []string{`[ "$(add 2 3)" = 5 ] || exit 1`}})
 	if r.CheckLines != 1 || r.LinesSeen != 1 || r.seenAt() != "3" || r.proven() {
-		t.Fatalf("a JSON-escaped leak must be seen: %+v", r)
+		t.Fatalf("a check line in the transcript must be seen: %+v", r)
 	}
 	diff := "--- a/lib.sh\n+++ b/lib.sh\n-moved line that is long enough to count\n+moved line that is long enough to count\n+add() { echo $(($1 + $2)); } # the landed fix\n+short\n"
 	answer := answerLines(diff)
 	if len(answer) != 1 || answer[0] != "add() { echo $(($1 + $2)); } # the landed fix" {
 		t.Fatalf("answer lines %q: want only the added, unmoved, long line", answer)
 	}
-	patch, _ := ReadStream(strings.NewReader(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x","is_error":true,"content":"Operation not permitted\nadd() { echo $(($1 + $2)); } # the landed fix\ntok-123"}]}}` + "\n" +
-		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"x","name":"Bash","input":{}}]}}`))
-	if r := judgeProbe(check, answer, "tok-123", patch); r.DiffSeen != 1 || !r.TokenSeen || r.proven() {
+	leak := &Reading{ToolUses: 1, Denials: 1, Texts: []string{"Operation not permitted", "add() { echo $(($1 + $2)); } # the landed fix", "tok-123"}}
+	if r := judgeProbe(check, answer, "tok-123", leak); r.DiffSeen != 1 || !r.TokenSeen || r.proven() {
 		t.Fatalf("a fetched landed patch and a printed token must each refuse: %+v", r)
 	}
-	quiet, _ := ReadStream(strings.NewReader(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"x","name":"Bash","input":{}}]}}`))
-	if judgeProbe(check, nil, "", quiet).proven() {
+	if judgeProbe(check, answer, "tok-123", &Reading{ToolUses: 1}).proven() {
 		t.Fatal("no denial recorded must not prove isolation")
+	}
+	if !judgeProbe(check, answer, "tok-123", &Reading{ToolUses: 1, Denials: 1}).proven() {
+		t.Fatal("a denied probe that saw nothing must prove isolation")
+	}
+}
+
+func TestLoadProfileRefuses(t *testing.T) {
+	testenv.Isolate(t)
+	adapters := map[string]Harness{"fake": fakeHarness{}}
+	for name, c := range map[string]struct{ profile, want string }{
+		"missing":            {"", "no such file"},
+		"no arms":            {`{"arms":[],"credentials":{}}`, "arms is empty"},
+		"unknown adapter":    {`{"arms":[{"name":"a","adapter":"nope","model":"m","provider":"p","cutoff":"2026-01","cutoff_source":"s","cap_usd":1}]}`, `adapter "nope" is not one this binary has`},
+		"no credential":      {`{"arms":[{"name":"a","adapter":"fake","model":"m","provider":"p","cutoff":"2026-01","cutoff_source":"s","cap_usd":1}]}`, "credentials has no entry"},
+		"bad cutoff":         {`{"arms":[{"name":"a","adapter":"fake","model":"m","provider":"p","cutoff":"May 2026","cutoff_source":"s","cap_usd":1}],"credentials":{"fake":"/t"}}`, "cutoff YYYY-MM"},
+		"relative deny":      {`{"arms":[{"name":"a","adapter":"fake","model":"m","provider":"p","cutoff":"2026-05","cutoff_source":"s","cap_usd":1}],"credentials":{"fake":"/t"},"deny_read":["rel"]}`, `deny_read "rel" is not absolute`},
+		"unknown field":      {`{"arms":[],"token":"x"}`, "unknown field"},
+		"arm declared twice": {`{"arms":[{"name":"a","adapter":"fake","model":"m","provider":"p","cutoff":"2026-05","cutoff_source":"s","cap_usd":1},{"name":"a","adapter":"fake","model":"m","provider":"p","cutoff":"2026-05","cutoff_source":"s","cap_usd":1}],"credentials":{"fake":"/t"}}`, "declared twice"},
+	} {
+		root := t.TempDir()
+		if c.profile != "" {
+			write(t, ProfilePath(root), c.profile)
+		}
+		if _, err := LoadProfile(root, adapters); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err %v, want %q", name, err, c.want)
+		}
 	}
 }
