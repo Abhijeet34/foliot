@@ -11,7 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Abhijeet34/foliot/internal/testenv"
 )
+
+func TestMain(m *testing.M) { os.Exit(testenv.Main(m)) }
 
 // fixture is a source repository with one merged pull request fixing add(), and a <root>
 // whose corpus holds one task drawn from it.
@@ -50,6 +54,7 @@ func write(t *testing.T, path, content string) {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	testenv.Isolate(t)
 	for k, v := range map[string]string{
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
 		"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@invalid",
@@ -248,6 +253,7 @@ func TestVerifyRefusesZeroTasks(t *testing.T) {
 }
 
 func TestLoadManifestRefusesNoHistoryMarkers(t *testing.T) {
+	testenv.Isolate(t)
 	path := filepath.Join(t.TempDir(), "corpus.json")
 	write(t, path, `{"classes": {"defect": 1}, "history_refusals": []}`)
 	if _, err := LoadManifest(path); err == nil || !strings.Contains(err.Error(), "examine nothing") {
