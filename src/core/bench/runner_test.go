@@ -19,14 +19,15 @@ import (
 
 // fakeScript stands in for a harness process. It checks what a worker is given (the
 // credential, no FOLIOT_HOME, no landed commit in its checkout), acts by model, and prints
-// its reading as one JSON line. Unisolated, it reads the real check the way a worker
+// its reading as one JSON line. Its DurationMS is 0 because the wall control refuses a
+// duration longer than the runner watched, and a fast machine runs this script in under 1 ms. Unisolated, it reads the real check the way a worker
 // without a sandbox can. It never prints the credential.
 const fakeScript = `model=$1 mode=$2
 echo launched >> "@LAUNCHES@"
 fail() { printf '{"Ended":true,"EndedBy":"error","Texts":["%s"]}\n' "$1"; exit 1; }
 [ -z "${FOLIOT_HOME:-}" ] || fail "FOLIOT_HOME reached the worker"
 [ "${FAKE_TOKEN:-}" = tok-not-a-secret ] || fail "credential not injected"
-reading() { printf '{"Model":"%s","Billing":"subscription","ToolUses":2,"Denials":%s,"Texts":["%s"],"WeekUsed":@WEEK@,"Ended":true,"EndedBy":"exit","ClaimedDone":true,"CostUSD":@COST@,"InputTokens":10,"OutputTokens":20,"CacheRead":30,"CacheWrite":40,"DurationMS":5}\n' "$model" "$1" "$2"; }
+reading() { printf '{"Model":"%s","Billing":"subscription","ToolUses":2,"Denials":%s,"Texts":["%s"],"WeekUsed":@WEEK@,"Ended":true,"EndedBy":"exit","ClaimedDone":true,"CostUSD":@COST@,"InputTokens":10,"OutputTokens":20,"CacheRead":30,"CacheWrite":40,"DurationMS":0}\n' "$model" "$1" "$2"; }
 case $FAKE_PROMPT in
   *"authorised isolation test"*)
     if [ "$mode" = none ]; then
