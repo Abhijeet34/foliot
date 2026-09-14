@@ -469,15 +469,19 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 		return 0, ProbeReading{}, err
 	}
 	defer os.RemoveAll(w.work)
-	mode := "sandbox"
+	mode, permissions := "sandbox", "acceptEdits"
 	if isolated {
 		if err := s.writeProfile(w); err != nil {
 			return 0, ProbeReading{}, err
 		}
 	} else {
-		mode = "absent"
+		// The state the critique measured: no sandbox, and a worker whose shell runs
+		// unprompted, which a bare arm needs to run its suite. Measured 2026-09-14: with no
+		// profile and acceptEdits, headless Bash refuses `npm test` as well as the check, so
+		// that mode is not a runnable arm and proves nothing about isolation.
+		mode, permissions = "absent", "bypassPermissions"
 	}
-	st, _, err := s.launch(ctx, w, arm, capUSD, probePrompt(s.Root, task.ID))
+	st, _, err := s.launch(ctx, w, arm, capUSD, permissions, probePrompt(s.Root, task.ID))
 	if err != nil {
 		return 0, ProbeReading{}, err
 	}
@@ -501,8 +505,9 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 	}
 	fmt.Fprintf(s.Out, "probe: seq=%d arm=%s task=%s isolation=%s check_lines=%d lines_seen=%d denials=%d attempts=%d proven=%t cost_usd=%s week_used=%s transcript=%s\n",
 		seq, arm.Name, task.ID, mode, reading.CheckLines, reading.LinesSeen, reading.Denials, reading.Attempts, p.Proven, fmtCost(p.CostUSD), fmtPct(st.WeekUsed), filepath.Join(w.record, "stream.jsonl"))
-	for _, l := range reading.Seen {
-		fmt.Fprintf(s.Out, "  seen: %s\n", l)
+	if len(reading.Seen) > 0 {
+		// Line numbers only: the check's text must not leave the denied directories.
+		fmt.Fprintf(s.Out, "  seen: check lines %s\n", reading.seenAt())
 	}
 	return seq, reading, nil
 }
@@ -540,7 +545,7 @@ func Probe(ctx context.Context, cfg Config, armName, taskID string, isolated boo
 }
 
 // launch runs the harness headless in the workspace and reads its transcript.
-func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD float64, prompt string) (*Stream, Observed, error) {
+func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD float64, permissions, prompt string) (*Stream, Observed, error) {
 	if err := os.WriteFile(filepath.Join(w.record, "prompt.md"), []byte(prompt), 0o600); err != nil {
 		return nil, Observed{}, err
 	}
@@ -565,7 +570,7 @@ func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD floa
 		"--no-session-persistence", "--strict-mcp-config",
 		"--setting-sources", "user",
 		"--tools", workerTools,
-		"--permission-mode", "acceptEdits",
+		"--permission-mode", permissions,
 	)
 	cmd.Dir = w.repo
 	cmd.Env = s.env(w)
@@ -645,7 +650,7 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 		return nil, err
 	}
 
-	st, obs, err := s.launch(ctx, w, r.arm, r.cap, renderPrompt(task))
+	st, obs, err := s.launch(ctx, w, r.arm, r.cap, "acceptEdits", renderPrompt(task))
 	if err != nil {
 		return nil, err
 	}
