@@ -3,13 +3,13 @@
 # bottom, and also `secret scan` and `tree guards` by name, so a branch that deletes either
 # job from this file cannot leave `checks` green with the guard gone.
 #
-# A pull request runs Linux only. GitHub bills a macOS minute at about 10x a Linux one against the
-# same allowance, so the macOS leg of `go` runs on the weekly schedule, on manual dispatch and on a
+# Pull requests get the Linux leg alone: one macOS runner minute draws roughly ten Linux minutes
+# from the quota, so `go` adds its macOS leg only for the weekly schedule, a manual dispatch and a
 # published release. a5 section 3.4 names `macos-latest` beside `ubuntu-latest` without saying
 # when; this is that reconciliation.
 #
-# Every step prints how many things it examined and fails on zero: a green over nothing is not a
-# pass. Third-party actions are pinned to a full commit SHA with the version in a trailing comment.
+# Each step prints an examined count and fails when it is zero, since a step that looked at nothing
+# proves nothing. Each outside action is named by its full commit, with its tag noted after it.
 
 name: CI
 
@@ -28,8 +28,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.ref }}
-  # A superseded pull request run is noise; a superseded scheduled or release run is the only
-  # record of its own result.
+  # Cancel only on pull requests, where a newer push makes the old run moot; a scheduled or release
+  # run is the sole witness of what it tested.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -107,9 +107,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # A secret committed and later deleted is still published, so the tip is not enough.
+          # Full history: a token removed by a later commit stays readable in the earlier one.
           fetch-depth: 0
-      # Downloaded and checksummed rather than run through a third-party action.
+      # Fetched from the release page and checked by hash; no outside action touches the checkout.
       - name: Install gitleaks
         run: |
           set -euo pipefail
@@ -134,8 +134,8 @@ jobs:
             *) echo "::error::gitleaks exited $rc" >&2; exit 1 ;;
           esac
 
-  # The one context the ruleset needs for this file; `if: always()` keeps a failed dependency from
-  # leaving it skipped, and a skipped required check is not a failing one.
+  # `checks` is what the ruleset requires. It runs under `if: always()`: skipped behind a failed
+  # dependency, it would read to the ruleset as neither pass nor fail, and this one has to fail.
   checks:
     name: checks
     if: always()
