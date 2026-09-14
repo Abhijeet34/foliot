@@ -1,0 +1,25 @@
+{
+  "last_seq": 9,
+  "bench": {
+    "defect": {
+      "claude-opus-5": {
+        "pass_rate": 1,
+        "n": 1,
+        "cost_median": 1.42
+      },
+      "claude-sonnet-5": {
+        "pass_rate": 1,
+        "n": 1,
+        "cost_median": 0.27
+      }
+    },
+    "feature": {
+      "claude-sonnet-5": {
+        "pass_rate": 1,
+        "n": 1,
+        "cost_median": 0.58
+      }
+    }
+  }
+}
+replay --verify: events=8 folds=2 identical=true state_sha256=33cef1ca1df76e32236ee58088f5ad2e5eabbfc30183a7eb388e17ce128f7efc

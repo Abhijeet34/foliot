@@ -5,7 +5,7 @@ It is meant to take a software task from a person, ask up front what the request
 
 **Status: pre-release.**
 There is no usable binary and no release yet.
-`go build ./cmd/foliot` today produces a program that prints its version and nothing else.
+`go build ./cmd/foliot` today produces a program that prints its version and runs `foliot replay --verify` over an existing log; nothing writes a log outside the tests yet.
 Everything below describes the design, not working software.
 
 ## What it is designed to do
@@ -17,7 +17,7 @@ Everything below describes the design, not working software.
 - **Quiet by default.** It speaks up for an irreversible action awaiting approval, a blocker, or a milestone that needs a decision; everything else is a one-line status on demand.
 
 [`AGENTS.md`](AGENTS.md) is the operating manual written for that design.
-Every `foliot` command it names is planned and does not exist yet.
+Every `foliot` command it names is planned and does not exist yet, except `foliot replay --verify`.
 
 ## Building
 
