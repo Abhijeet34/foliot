@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Every check a merge depends on. The ruleset on main requires `checks`, the aggregate at the
-# bottom, and also `secret scan` and `fork identifiers` by name, so a branch that deletes either
+# bottom, and also `secret scan` and `tree guards` by name, so a branch that deletes either
 # job from this file cannot leave `checks` green with the guard gone.
 #
 # A pull request runs Linux only. GitHub bills a macOS minute at about 10x a Linux one against the
@@ -83,17 +83,19 @@ jobs:
             *) echo "::error::the built binary did not print its version" >&2; exit 1 ;;
           esac
 
-  fork-identifiers:
-    name: fork identifiers
+  tree-guards:
+    name: tree guards
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The proof first: a check that cannot go red on a planted string guards nothing.
-      - name: The check fails on planted identifiers
-        run: sh scripts/fork-identifiers-test.sh
+      - name: The guards fail on planted strings
+        run: sh scripts/tree-guard-test.sh
       - name: No fork identifier in the tree
-        run: sh scripts/fork-identifiers.sh
+        run: sh scripts/tree-guard.sh .guard/fork-identifiers
+      - name: No former product name in the tree
+        run: sh scripts/tree-guard.sh .guard/former-name
 
   secret-scan:
     name: secret scan
@@ -137,7 +139,7 @@ jobs:
   checks:
     name: checks
     if: always()
-    needs: [go, fork-identifiers, secret-scan]
+    needs: [go, tree-guards, secret-scan]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

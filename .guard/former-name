@@ -1,0 +1,5 @@
+# The product's former name as a standalone word in any case, read by scripts/tree-guard.sh.
+# It was renamed to foliot on 2026-09-14; words that merely contain the letters do not match.
+# One pattern line, then the files allowed to match it, one per line: <path> # <reason>
+pattern: (^|[^[:alnum:]_])[Oo][Rr][Cc]([^[:alnum:]]|$)
+scripts/tree-guard-test.sh # plants the former name to prove the check fails

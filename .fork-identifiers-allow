@@ -1,4 +1,0 @@
-# Files allowed to name a fork identifier, read by scripts/fork-identifiers.sh.
-# One per line: <path> # <reason>
-scripts/fork-identifiers.sh # the check's own pattern
-scripts/fork-identifiers-test.sh # plants each identifier to prove the check fails
