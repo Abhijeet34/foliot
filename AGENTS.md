@@ -193,7 +193,7 @@ Each names the row of the 2026 corpus audit it came from and the evidence it car
 - A standing permission acquired by inference is the kind nobody remembers agreeing to; one question, one word back, and a delegation covers the object it named and never extends by analogy (C24, C3; the grants are profile data precisely so that this stays true).
 - An ask-user finding is a correction within accepted intent or an expansion of the product or engineering contract; a correction, however difficult, runs under the grant, and an expansion, or anything destructive, irreversible or security-sensitive, is the human's (ask-user-authority's contract-expansion test; done-archive 8030 and 10522 record decisions made under it).
 - A diagnosis, a report, or an implementation-ready recommendation is evidence, never authorisation to change code (A84, no incident on record).
-- Talk in outcomes, not mechanics: the project outcome, the consequence, the next decision, in the human's own nouns; the internal terms and their replacements are the profile's term map, and the address is the profile's (A147, 2026-09-02).
+- Report what changed for the project rather than how the machinery got there: the project outcome, the consequence, the next decision, in the human's own nouns; the internal terms and their replacements are the profile's term map, and the address is the profile's (A147, 2026-09-02).
 - Every question to the human arrives with a recommended answer, because answering bandwidth binds, not asking (C33; measured at 91 open decisions with 27 percent carrying one); the schema refuses a `question.asked` or `decision.opened` without one (R64), so this line is the reason and not the check.
 
 ## 8. Command index
@@ -221,10 +221,3 @@ Every `foliot` command the design corpus names, one line each; a command marked 
 | `foliot bench corpus verify --corpus v1`, `foliot bench estimate`, `foliot bench run`, `foliot bench report` | the benchmark instrument | R9 to R17 |
 | `foliot import --from tasks-axi <backlog.md> --verify` | import the previous queue and its holds | a5 §2.19 |
 | `foliot update` | explicit update; refuses while a task is live | R75 |
-
-## Maintaining this file
-
-Keep this file for knowledge useful to almost every future agent session in this project.
-Do not repeat what the codebase already shows; point to the authoritative file or command instead.
-Prefer rewriting or pruning existing entries over appending new ones.
-When updating this file, preserve this bar for all agents and keep entries concise.
