@@ -48,12 +48,12 @@ type Options struct {
 
 // Result is one task's reading. An exit code of notRun means the step did not run.
 type Result struct {
-	ID, Class            string
-	Base, Landed, Layout int
-	Visible              int
-	LayoutSameAsBase     bool
-	Examined             int
-	Refusals             []string
+	ID, Class               string
+	Base, Landed, Additions int
+	Visible                 int
+	AdditionsSameAsBase     bool
+	Examined                int
+	Refusals                []string
 }
 
 const notRun = -1000
@@ -176,7 +176,7 @@ func corpusVersion(bench string) (string, bool) {
 }
 
 func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id string) Result {
-	r := Result{ID: id, Base: notRun, Landed: notRun, Layout: notRun, Visible: notRun}
+	r := Result{ID: id, Base: notRun, Landed: notRun, Additions: notRun, Visible: notRun}
 	t, refusals := LoadTask(filepath.Join(corpusDir, id, "task.json"), m)
 	checkDir := filepath.Join(bench, "checks", id)
 	visible := ""
@@ -225,8 +225,8 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 
 	// Each phase is a fresh export of the pinned tree with no .git, so a check can read the
 	// code it tests and nothing that tells it which commit it is in.
-	run := func(phase, sha string, layout []change) int {
-		co, err := newCheckout(ctx, mirror, filepath.Join(work, phase), sha, layout)
+	run := func(phase, sha string, overlay []change) int {
+		co, err := newCheckout(ctx, mirror, filepath.Join(work, phase), sha, overlay)
 		if err != nil {
 			refuse("criterion 3: %s checkout: %v", phase, err)
 			return notRun
@@ -260,9 +260,9 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 		}
 	}
 	if len(added) == 0 {
-		r.LayoutSameAsBase = true
-	} else if r.Layout = run("layout", t.BaseSHA, added); r.Layout == 0 {
-		refuse("criterion 3: the hidden check exits 0 on base_sha with the landed file layout and none of its content, so it reads which files exist rather than testing them")
+		r.AdditionsSameAsBase = true
+	} else if r.Additions = run("additions", t.BaseSHA, added); r.Additions == 0 {
+		refuse("criterion 3: the hidden check exits 0 on base_sha plus only the files the landed change adds, so it reads new files rather than testing the changed behaviour")
 	}
 	// The visible suite is the slowest step, so it runs last, only for a task nothing refused,
 	// in its own checkout that never held the check. It is a git clone, not an export, because
@@ -345,10 +345,12 @@ func historyRefusals(ctx context.Context, mirror string, t *Task, files []string
 type change struct {
 	path    string
 	deleted bool
+	content []byte
 }
 
-// addedPaths is the landed change's file layout: paths it adds become empty files and paths it
-// deletes are removed, over base content.
+// addedPaths is the landed change's additions: the files it adds, with their landed content,
+// and the files it deletes. Over base content they make a tree that holds everything a check
+// could read from a new file and none of the edits to existing code.
 func addedPaths(ctx context.Context, mirror string, t *Task) ([]change, error) {
 	out, err := gitOut(ctx, mirror, "diff", "--name-status", "--no-renames", "-z", t.BaseSHA, t.LandedSHA)
 	if err != nil {
@@ -359,7 +361,11 @@ func addedPaths(ctx context.Context, mirror string, t *Task) ([]change, error) {
 	for i := 0; i+1 < len(f); i += 2 {
 		switch f[i] {
 		case "A":
-			changes = append(changes, change{path: f[i+1]})
+			blob, err := exec.CommandContext(ctx, "git", "--git-dir", mirror, "cat-file", "blob", t.LandedSHA+":"+f[i+1]).Output()
+			if err != nil {
+				return nil, fmt.Errorf("reading %s at landed_sha: %w", f[i+1], err)
+			}
+			changes = append(changes, change{path: f[i+1], content: blob})
 		case "D":
 			changes = append(changes, change{path: f[i+1], deleted: true})
 		}
@@ -419,7 +425,7 @@ func newClone(ctx context.Context, mirror, dir, sha string) (*checkout, error) {
 	return &checkout{dir: dir}, nil
 }
 
-func newCheckout(ctx context.Context, mirror, dir, sha string, layout []change) (*checkout, error) {
+func newCheckout(ctx context.Context, mirror, dir, sha string, overlay []change) (*checkout, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -442,7 +448,7 @@ func newCheckout(ctx context.Context, mirror, dir, sha string, layout []change) 
 	if err := untar.Wait(); err != nil {
 		return nil, fmt.Errorf("tar: %v: %s", err, stderr.String())
 	}
-	for _, c := range layout {
+	for _, c := range overlay {
 		p := filepath.Join(dir, filepath.FromSlash(c.path))
 		if c.deleted {
 			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -453,7 +459,7 @@ func newCheckout(ctx context.Context, mirror, dir, sha string, layout []change) 
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(p, nil, 0o644); err != nil {
+		if err := os.WriteFile(p, c.content, 0o644); err != nil {
 			return nil, err
 		}
 	}
@@ -563,12 +569,12 @@ func printResult(w io.Writer, r Result, logs string) {
 	if len(r.Refusals) > 0 {
 		verdict = "REFUSED"
 	}
-	layout := code(r.Layout)
-	if r.LayoutSameAsBase {
-		layout = "same-as-base"
+	additions := code(r.Additions)
+	if r.AdditionsSameAsBase {
+		additions = "same-as-base"
 	}
-	fmt.Fprintf(w, "task=%s class=%s base=%s landed=%s layout=%s visible_at_base=%s examined=%d verdict=%s logs=%s\n",
-		r.ID, r.Class, code(r.Base), code(r.Landed), layout, code(r.Visible), r.Examined, verdict, logs)
+	fmt.Fprintf(w, "task=%s class=%s base=%s landed=%s additions=%s visible_at_base=%s examined=%d verdict=%s logs=%s\n",
+		r.ID, r.Class, code(r.Base), code(r.Landed), additions, code(r.Visible), r.Examined, verdict, logs)
 	for _, why := range r.Refusals {
 		fmt.Fprintf(w, "  refused: %s\n", why)
 	}

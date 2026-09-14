@@ -126,10 +126,10 @@ func TestVerifyCertifiesARedThenGreenTask(t *testing.T) {
 	if !s.Success() || s.Examined != 1 || s.Classes["defect"] != 1 {
 		t.Fatalf("want success over 1 defect, got %+v\n%s", s, out)
 	}
-	if r.Base == 0 || r.Landed != 0 || r.Layout == 0 || r.Visible != 0 || r.Examined != 1 {
-		t.Fatalf("want base red, landed green, layout red, visible green, examined 1; got %+v", r)
+	if r.Base == 0 || r.Landed != 0 || r.Additions == 0 || r.Visible != 0 || r.Examined != 1 {
+		t.Fatalf("want base red, landed green, additions red, visible green, examined 1; got %+v", r)
 	}
-	for _, want := range []string{"task=calc-add class=defect base=1 landed=0 layout=1 visible_at_base=0 examined=1 verdict=ok", "examined=1 ok=1 refused=0 defect=1 feature=0 refactor=0 scope=full corpus_sha="} {
+	for _, want := range []string{"task=calc-add class=defect base=1 landed=0 additions=1 visible_at_base=0 examined=1 verdict=ok", "examined=1 ok=1 refused=0 defect=1 feature=0 refactor=0 scope=full corpus_sha="} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -147,8 +147,11 @@ func TestVerifyRefuses(t *testing.T) {
 		{"a check that passes on an empty change", "exits 0 at base_sha", func(f *fixture, _ *Manifest) {
 			f.check = "echo examined=1\n"
 		}},
-		{"a check that reads a file only the landed commit adds", "landed file layout", func(f *fixture, _ *Manifest) {
+		{"a check that tests for a file only the landed commit adds", "only the files the landed change adds", func(f *fixture, _ *Manifest) {
 			f.check = "test -f notes/added.txt || exit 1\necho examined=1\n"
+		}},
+		{"a check that reads the content of a file only the landed commit adds", "only the files the landed change adds", func(f *fixture, _ *Manifest) {
+			f.check = "grep -q 'the fix' notes/added.txt || exit 1\necho examined=1\n"
 		}},
 		{"a check that tells the commits apart by sha", "names a pinned sha", func(f *fixture, _ *Manifest) {
 			f.check = "grep -q " + f.landed[:12] + " /dev/null\necho examined=1\n"
