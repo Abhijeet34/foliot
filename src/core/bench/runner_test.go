@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,7 +47,10 @@ case $prompt in
     ;;
   *)
     git cat-file -e "$FAKE_LANDED" 2>/dev/null && fail "landed commit present in the checkout"
-    case $model in *haiku*) printf 'add() { echo $(($1 + $2)); }\n' > lib.sh ;; esac
+    case $model in
+      *haiku*) printf 'add() { echo $(($1 + $2)); }\n' > lib.sh ;;
+      *sonnet*) printf 'cat "$FAKE_ROOT/bench/checks/calc-add/check.sh" > "$FAKE_LEAK/read" 2>/dev/null; echo planted > "$FAKE_LEAK/wrote" 2>/dev/null; add() { echo $(($1 + $2)); }\n' > lib.sh ;;
+    esac
     ;;
 esac
 printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":%s,"duration_ms":5,"num_turns":2,"permission_denials":[],"modelUsage":{"%s":{"inputTokens":10,"outputTokens":20,"cacheReadInputTokens":30,"cacheCreationInputTokens":40,"costUSD":%s}}}\n' "${FAKE_TOTAL:-0.25}" "$model" "${FAKE_PART:-0.25}"
@@ -57,6 +61,7 @@ type runnerFixture struct {
 	cfg      Config
 	out      *bytes.Buffer
 	launches string
+	leak     string // where a planted check-phase payload tries to copy the check
 }
 
 // newRunnerFixture writes the fake harness with its settings baked in, since the runner
@@ -69,7 +74,9 @@ func newRunnerFixture(t *testing.T, vars ...string) *runnerFixture {
 	r := &runnerFixture{fixture: f, out: &bytes.Buffer{}, launches: filepath.Join(dir, "launches")}
 	// Overrides come first: a replacer takes the first pair that matches.
 	settings := append(vars, "${FAKE_WEEK:-0.2}", "0.2", "${FAKE_TOTAL:-0.25}", "0.25", "${FAKE_PART:-0.25}", "0.25")
-	pairs := []string{"$FAKE_TOKEN", "tok-not-a-secret", "$FAKE_LANDED", f.landed, "$FAKE_LAUNCHES", r.launches}
+	r.leak = filepath.Join(dir, "leak")
+	os.MkdirAll(r.leak, 0o755)
+	pairs := []string{"$FAKE_TOKEN", "tok-not-a-secret", "$FAKE_LANDED", f.landed, "$FAKE_LAUNCHES", r.launches, "$FAKE_ROOT", f.root, "$FAKE_LEAK", r.leak}
 	for i := 0; i+1 < len(settings); i += 2 {
 		pairs = append(pairs, settings[i], settings[i+1])
 	}
@@ -205,6 +212,43 @@ func TestRunRefusesBeforeLaunching(t *testing.T) {
 				t.Fatalf("a refused sweep recorded %d runs", len(runs))
 			}
 		})
+	}
+}
+
+func TestCheckPhaseConfinesPlantedCode(t *testing.T) {
+	r := newRunnerFixture(t)
+	if _, ok := confineCheck("true", t.TempDir(), nil); !ok {
+		t.Skip("no working check confinement on this platform or inside this sandbox")
+	}
+	// Red first: the same payload, unconfined, copies the check out of the corpus.
+	co := t.TempDir()
+	payload := `cat "` + filepath.Join(r.root, "bench", "checks", "calc-add", "check.sh") + `" > "` + r.leak + `/read"`
+	for _, c := range []struct {
+		name     string
+		confined bool
+	}{{"unconfined", false}, {"confined", true}} {
+		os.Remove(filepath.Join(r.leak, "read"))
+		cmd := payload
+		if c.confined {
+			cmd, _ = confineCheck(payload, co, []string{r.root})
+		}
+		exec.Command("sh", "-c", cmd).Run()
+		b, _ := os.ReadFile(filepath.Join(r.leak, "read"))
+		t.Logf("%s payload: bytes of the check copied out=%d", c.name, len(b))
+		if (len(b) > 0) == c.confined {
+			t.Fatalf("%s: copied %d bytes", c.name, len(b))
+		}
+	}
+	os.Remove(filepath.Join(r.leak, "read"))
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: arms(t, "bare-small"), Repeats: 1, BudgetUSD: 5}); err != nil {
+		t.Fatalf("Run: %v\n%s", err, r.out)
+	}
+	events, _ := log.Read(log.Path(r.root), 1)
+	v := log.Runs(events)[0].Verdict
+	left, _ := os.ReadDir(r.leak)
+	t.Logf("planted payload: pass=%t check_confined=%t files written outside the checkout=%d", v.Pass, v.CheckConfined, len(left))
+	if !v.Pass || !v.CheckConfined || len(left) != 0 {
+		t.Fatalf("pass=%t confined=%t, and the payload wrote %v outside the checkout", v.Pass, v.CheckConfined, left)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/Abhijeet34/foliot/src/core/bench"
 	"github.com/Abhijeet34/foliot/src/core/log"
@@ -117,7 +118,7 @@ func benchCommand(name string, args []string, getenv func(string) string, stdout
 	if err != nil {
 		return usageError(err.Error())
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if name == "report" {

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/Abhijeet34/foliot/src/core/bench"
 	"github.com/Abhijeet34/foliot/src/core/log"
@@ -169,7 +170,7 @@ func corpusVerify(args []string, getenv func(string) string, stdout, stderr io.W
 	if err != nil {
 		return usageError(err.Error())
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	s, err := bench.Verify(ctx, bench.Options{Root: root, Corpus: *corpus, Tasks: tasks, Jobs: *jobs, Out: stdout})
 	if err != nil {

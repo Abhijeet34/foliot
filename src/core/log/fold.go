@@ -57,6 +57,9 @@ type BenchVerdict struct {
 	SymlinksSkipped int      `json:"symlinks_skipped,omitempty"`
 	WeekUsed        *float64 `json:"week_used,omitempty"`
 	HarnessVersion  string   `json:"harness_version,omitempty"`
+	// CheckConfined is true when the hidden check, which runs the worker's code, ran under
+	// the platform's sandbox.
+	CheckConfined bool `json:"check_confined"`
 }
 
 // BenchProbe is bench.probe's data. Isolation is "sandbox" when the run profile was

@@ -669,7 +669,7 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 		// The harness ran another model than the arm names: the run is not this arm's.
 		cols["model_ran"] = st.Model
 	}
-	checkExit, examined, symlinks, err := s.score(ctx, w, mirror, task)
+	checkExit, examined, symlinks, confined, err := s.score(ctx, w, mirror, task)
 	if err != nil {
 		return nil, err
 	}
@@ -679,7 +679,7 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 		Corpus: s.Corpus, Task: task.ID, Arm: r.arm.Name, Repeat: r.repeat,
 		Pass: pass, FalseClaim: claimedDone && !pass, Columns: map[string]any(cols),
 		CheckExit: checkExit, Examined: examined,
-		SymlinksSkipped: symlinks, WeekUsed: st.WeekUsed, HarnessVersion: st.Version,
+		SymlinksSkipped: symlinks, WeekUsed: st.WeekUsed, HarnessVersion: st.Version, CheckConfined: confined,
 	}
 	cause := runSeq
 	if _, err := s.log.Append(log.Entry{Type: "bench.verdict", Actor: "bench", Cause: &cause, Data: verdict, Evidence: []log.Evidence{
@@ -699,19 +699,19 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 
 // score runs the hidden check on base_sha plus the worker's changes, in a fresh export the
 // worker never touched, after the worker has exited (a5 section 2.16).
-func (s *session) score(ctx context.Context, w *workspace, mirror string, task *Task) (int, int, int, error) {
+func (s *session) score(ctx context.Context, w *workspace, mirror string, task *Task) (int, int, int, bool, error) {
 	dir := w.work + ".check"
 	defer os.RemoveAll(dir)
 	co, err := newCheckout(ctx, mirror, dir, task.BaseSHA, nil)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, err
 	}
 	changes, symlinks, err := treeChanges(co.dir, w.repo)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, err
 	}
 	if co, err = applyChanges(co, changes); err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, err
 	}
 	var paths []string
 	for _, c := range changes {
@@ -725,15 +725,22 @@ func (s *session) score(ctx context.Context, w *workspace, mirror string, task *
 	_ = os.WriteFile(filepath.Join(w.record, "changes.txt"), []byte(strings.Join(paths, "\n")+"\n"), 0o600)
 	if strings.TrimSpace(task.Setup) != "" {
 		if rc := co.sh(ctx, task.Setup, nil, setupTimeout, filepath.Join(w.record, "check-setup.log")); rc != 0 {
-			return rc, 0, symlinks, nil
+			return rc, 0, symlinks, false, nil
 		}
 	}
 	if err := copyDir(filepath.Join(s.Root, "bench", "checks", task.ID), filepath.Join(co.dir, ".bench-check")); err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, false, err
 	}
 	logPath := filepath.Join(w.record, "check.log")
-	rc := co.sh(ctx, "sh .bench-check/check.sh", checkEnv, checkTimeout, logPath)
-	return rc, lastExamined(logPath), symlinks, nil
+	// The check needs the host's toolchain, so only the answer keys are denied here, not
+	// the whole home; writes are what keep a planted copy from reaching a later run.
+	command, confined := confineCheck("sh .bench-check/check.sh", co.dir, append([]string{s.Root}, critiqueDenied(s.realHome)...))
+	env := append([]string{"TMPDIR=" + filepath.Join(co.dir, ".tmp")}, checkEnv...)
+	if err := os.MkdirAll(filepath.Join(co.dir, ".tmp"), 0o700); err != nil {
+		return 0, 0, 0, false, err
+	}
+	rc := co.sh(ctx, command, env, checkTimeout, logPath)
+	return rc, lastExamined(logPath), symlinks, confined, nil
 }
 
 func applyChanges(co *checkout, changes []change) (*checkout, error) {
