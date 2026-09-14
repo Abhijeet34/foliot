@@ -239,6 +239,38 @@ func TestGarbageLineIsQuarantinedOnceAndNeverEdited(t *testing.T) {
 	}
 }
 
+func TestCorruptedSeqOrLastLineIsQuarantinedNotFatal(t *testing.T) {
+	for name, c := range map[string]struct {
+		corrupt func(lines [][]byte)
+		want    string
+	}{
+		"seq digit overwritten": {func(l [][]byte) { copy(l[1], `{"seq":9`) }, `{"reason":"seq 9 where seq 2 belongs","seq":2}`},
+		"seq duplicated":        {func(l [][]byte) { copy(l[1], `{"seq":1`) }, `{"reason":"seq 1 where seq 2 belongs","seq":2}`},
+		"last complete line":    {func(l [][]byte) { copy(l[2], `garbage!`) }, `{"reason":"unparseable: invalid character 'g' looking for beginning of value","seq":3}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := testenv.Isolate(t)
+			l := open(t, root)
+			for i := range 3 {
+				mustAppend(t, l, run("v1", fmt.Sprint("t", i), "defect", "m", 1))
+			}
+			l.Close()
+			data, _ := os.ReadFile(Path(root))
+			lines := bytes.SplitAfter(data, []byte("\n"))
+			c.corrupt(lines)
+			os.WriteFile(Path(root), bytes.Join(lines, nil), 0o600)
+			open(t, root)
+			evs := readAll(t, root)
+			if last := evs[len(evs)-1]; last.Type != "log.quarantined" || last.Seq != 4 || string(last.Data) != c.want {
+				t.Fatalf("events %s, last data %s; want seq 4 quarantining %s", types(evs), last.Data, c.want)
+			}
+			if err := Verify(Path(root)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestInvalidKnownEventIsQuarantinedAndSkippedByTheFold(t *testing.T) {
 	root := testenv.Isolate(t)
 	line := `{"seq":1,"ts":"2026-09-14T12:00:00.000Z","type":"bench.run","task":null,"attempt":null,"actor":"bench","cause":null,"evidence":[],"data":{"corpus":"v1"},"v":1}` + "\n" +

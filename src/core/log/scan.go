@@ -40,15 +40,26 @@ func scan(data []byte) (*scanned, error) {
 	end := bytes.LastIndexByte(data, '\n') + 1
 	s.end, s.torn = int64(end), data[end:]
 
-	var unreadable []string // reasons of unparseable lines since the last parsed one
-	for line := range bytes.Lines(data[:end]) {
-		var e Event
-		if err := json.Unmarshal(line, &e); err != nil {
-			unreadable = append(unreadable, "unparseable: "+err.Error())
-			continue
+	type line struct {
+		e      Event
+		reason string // non-empty when the line carries no usable seq
+	}
+	var lines []line
+	for raw := range bytes.Lines(data[:end]) {
+		var l line
+		if err := json.Unmarshal(raw, &l.e); err != nil {
+			l.reason = "unparseable: " + err.Error()
+		} else if l.e.Seq < 1 {
+			l.reason = "no positive seq"
 		}
-		if e.Seq < 1 {
-			unreadable = append(unreadable, "no positive seq")
+		lines = append(lines, l)
+	}
+
+	var unreadable []string // reasons of unusable lines since the last parsed one
+	for i, l := range lines {
+		e := l.e
+		if l.reason != "" {
+			unreadable = append(unreadable, l.reason)
 			continue
 		}
 		want := s.lastSeq + 1 + int64(len(unreadable))
@@ -56,6 +67,20 @@ func scan(data []byte) (*scanned, error) {
 			return nil, &VerifyError{e.Seq, fmt.Sprintf("envelope version %d is newer than this binary reads (%d)", e.V, Version)}
 		}
 		if e.Seq != want {
+			// A corrupted seq is told from a deleted or reordered line by the next
+			// usable line: only when it sits exactly where position says is this
+			// line unreadable rather than the log out of order.
+			confirmed := false
+			for d, n := range lines[i+1:] {
+				if n.reason == "" {
+					confirmed = n.e.Seq == want+int64(d+1)
+					break
+				}
+			}
+			if confirmed {
+				unreadable = append(unreadable, fmt.Sprintf("seq %d where seq %d belongs", e.Seq, want))
+				continue
+			}
 			return nil, &VerifyError{want, fmt.Sprintf("expected seq %d, found %d after seq %d and %d unreadable lines", want, e.Seq, s.lastSeq, len(unreadable))}
 		}
 		s.flush(unreadable)
