@@ -285,12 +285,29 @@ func TestVerifyGatesAVisibleRedOnTheLoad(t *testing.T) {
 		{"a red under acceptable load is refused with no re-run", `false`,
 			func(int) float64 { return 0 }, false,
 			[]string{"is red at base_sha: red in 2 of 2 concurrent runs", "alone_red_at_base=- alone_load_at_base=- alone_red_at_landed=- alone_load_at_landed=- load_sensitive=false"}},
-		{"a red that stays overloaded alone is refused as inconclusive", `false`,
+		{"a red whose load never drains is refused as inconclusive without a re-run", `false`,
 			func(int) float64 { return over }, false,
-			[]string{"load stayed above the cpu count, so the reading is inconclusive and not certified"}},
+			[]string{"did not fall to the cpu count within 300ms (last reading " + strconv.FormatFloat(over, 'f', 1, 64), "was not re-run alone and is inconclusive", "alone_red_at_base=- "}},
+		{"a re-run alone waits for the load to drain", `[ "$i" -ge 2 ] && sh test.sh`,
+			func() func(int) float64 {
+				reads := 0
+				return func(n int) float64 {
+					if n < 4 {
+						return over
+					}
+					// Three readings above the cpu count after the first pass, then drained.
+					if reads++; reads <= 3 {
+						return over
+					}
+					return 0
+				}
+			}(), true,
+			[]string{"alone_red_at_base=0/2 alone_load_at_base=0.0", "load_sensitive=true"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			defer func(i, d time.Duration) { loadInterval, drainTimeout = i, d }(loadInterval, drainTimeout)
+			loadInterval, drainTimeout = 50*time.Millisecond, 300*time.Millisecond
 			f := newFixture(t)
 			t.Setenv("SHARED", f.shared)
 			f.task.VisibleCheck = countRun + c.suite

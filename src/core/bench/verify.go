@@ -43,8 +43,13 @@ const DefaultVisibleRuns = 2
 // visibleTimeout is a variable so a test can plant a hanging suite without waiting half an hour.
 var visibleTimeout = 30 * time.Minute
 
-// loadInterval is how often the load average is read while visible copies run.
-const loadInterval = 15 * time.Second
+// loadInterval is how often the load average is read while visible copies run or drain, and
+// drainTimeout bounds the wait for it to fall to the cpu count before a re-run alone; both are
+// variables so a test need not wait for them.
+var (
+	loadInterval = 15 * time.Second
+	drainTimeout = 15 * time.Minute
+)
 
 var examinedRe = regexp.MustCompile(`^examined=([0-9]+)$`)
 
@@ -109,7 +114,14 @@ func (r Runs) load() string {
 	case r.LoadMax < 0:
 		return "unknown"
 	}
-	return strconv.FormatFloat(r.LoadMax, 'f', 1, 64)
+	return loadString(r.LoadMax)
+}
+
+func loadString(load float64) string {
+	if load < 0 {
+		return "unknown"
+	}
+	return strconv.FormatFloat(load, 'f', 1, 64)
 }
 
 var loadRe = regexp.MustCompile(`load averages?: *([0-9]+[.,][0-9]+)`)
@@ -392,6 +404,10 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 	return r, func(r *Result) {
 		r.pending = false
 		for _, p := range overloaded {
+			if load, ok := drain(ctx); !ok {
+				r.Refusals = append(r.Refusals, fmt.Sprintf("criterion 1: the load average did not fall to the cpu count within %s (last reading %s on %d cpus), so the red at %s_sha was not re-run alone and is inconclusive, not certified: %s beside other tasks", drainTimeout, loadString(load), runtime.NumCPU(), p.phase, p.under(r).describe()))
+				continue
+			}
 			runs, why := visibleRuns(ctx, mirror, work, t, p.phase+"-alone", p.sha, copies)
 			*p.alone(r) = runs
 			under := *p.under(r)
@@ -405,6 +421,25 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 			default:
 				r.Refusals = append(r.Refusals, fmt.Sprintf("criterion 1: the visible check `%s` is red again at %s_sha run alone: %s, after %s beside other tasks (logs %s)", t.VisibleCheck, p.phase, runs.describe(), under.describe(), filepath.Join(work, "visible-"+p.phase+"-alone-<n>.log")))
 			}
+		}
+	}
+}
+
+// drain waits until the one-minute load average is at or under the cpu count, for at most
+// drainTimeout, and returns the last reading and whether it got there.
+func drain(ctx context.Context) (float64, bool) {
+	deadline := time.Now().Add(drainTimeout)
+	for {
+		load := loadAverage(ctx)
+		if load >= 0 && load <= float64(runtime.NumCPU()) {
+			return load, true
+		}
+		if !time.Now().Before(deadline) || ctx.Err() != nil {
+			return load, false
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(loadInterval):
 		}
 	}
 }
