@@ -56,7 +56,7 @@ func (iso Isolation) settings(tokenEnv string) ([]byte, error) {
 			"filesystem": map[string]any{
 				"denyRead":   deny,
 				"allowRead":  append([]string{iso.Run}, iso.Toolchain...),
-				"allowWrite": []string{filepath.Join(iso.Run, "tmp")},
+				"allowWrite": []string{iso.Run}, // the worker's own home, caches and temp; its profile is denied below
 				"denyWrite":  []string{claudeDir},
 			},
 			// Measured 2026-09-14: the visible suite runs offline once setup has run, so a

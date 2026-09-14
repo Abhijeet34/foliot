@@ -164,7 +164,16 @@ func TestCorpusVerifyExitCodes(t *testing.T) {
 		code       int
 		want       string
 	}{
-		{"an unknown bench command is a usage error", "/unused", []string{"bench", "run"}, 2, "unknown command"},
+		{"an unknown bench command is a usage error", "/unused", []string{"bench", "frobnicate"}, 2, "unknown command"},
+		{"run without arms", "/unused", []string{"bench", "run", "--corpus", "v1", "--repeats", "1", "--budget-usd", "1"}, 2, "--arms <list> and --repeats"},
+		{"run without a budget", "/unused", []string{"bench", "run", "--corpus", "v1", "--arms", "bare-large", "--repeats", "1"}, 2, "--budget-usd <usd> above 0"},
+		{"run with an unknown arm", "/unused", []string{"bench", "run", "--corpus", "v1", "--arms", "bare-huge", "--repeats", "1", "--budget-usd", "1"}, 2, "unknown arm \"bare-huge\""},
+		{"run with a repeated arm", "/unused", []string{"bench", "run", "--corpus", "v1", "--arms", "ceiling,ceiling", "--repeats", "1", "--budget-usd", "1"}, 2, "listed twice"},
+		{"estimate with a run-only flag", "/unused", []string{"bench", "estimate", "--corpus", "v1", "--arms", "ceiling", "--repeats", "1", "--budget-usd", "1"}, 2, "--budget-usd does not apply to bench estimate"},
+		{"probe without an arm", "/unused", []string{"bench", "probe", "--corpus", "v1"}, 2, "--arm <arm> is required"},
+		{"report without a corpus", "/unused", []string{"bench", "report"}, 2, "--corpus <name> is required"},
+		{"report over a missing corpus", empty, []string{"bench", "report", "--corpus", "v1"}, 1, "corpus.json"},
+		{"run --help", "", []string{"bench", "run", "--help"}, 0, "usage: foliot bench run"},
 		{"verify without --corpus", "/unused", []string{"bench", "corpus", "verify"}, 2, "--corpus <name> is required"},
 		{"verify with a path for a corpus", "/unused", []string{"bench", "corpus", "verify", "--corpus", "../v1"}, 2, "plain name"},
 		{"verify with a stray argument", "/unused", []string{"bench", "corpus", "verify", "--corpus", "v1", "extra"}, 2, "unexpected argument"},
