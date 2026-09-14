@@ -5,7 +5,7 @@ It is meant to take a software task from a person, ask up front what the request
 
 **Status: pre-release.**
 There is no usable binary and no release yet.
-`go build ./cmd/foliot` today produces a program that prints its version, runs `foliot replay --verify` over an existing log, and runs `foliot bench corpus verify`, which certifies the benchmark corpus; nothing writes a log outside the tests yet.
+`go build ./cmd/foliot` today produces a program that prints its version, runs `foliot replay --verify` over an existing log, certifies the benchmark corpus with `foliot bench corpus verify`, and runs the bare benchmark arms with `foliot bench run`, `estimate`, `report` and `probe`.
 Everything below describes the design, not working software.
 
 ## What it is designed to do
@@ -17,7 +17,7 @@ Everything below describes the design, not working software.
 - **Quiet by default.** It speaks up for an irreversible action awaiting approval, a blocker, or a milestone that needs a decision; everything else is a one-line status on demand.
 
 [`AGENTS.md`](AGENTS.md) is the operating manual written for that design.
-Every `foliot` command it names is planned and does not exist yet, except `foliot replay --verify` and `foliot bench corpus verify`.
+Every `foliot` command it names is planned and does not exist yet, except `foliot replay --verify` and the `foliot bench` commands.
 
 ## Verifying the benchmark corpus
 
@@ -33,6 +33,26 @@ It also runs the check on the base tree plus only the files the landed commit ad
 It ends with `examined=<n>` and a count per class, and exits 0 only when every task passed, the class counts match `corpus.json`, and the corpus is committed.
 
 A green over zero tasks is not a pass.
+
+## Running the benchmark
+
+```sh
+FOLIOT_HOME=<root> foliot bench estimate --corpus v1 --arms bare-large,bare-small --repeats 3
+FOLIOT_HOME=<root> foliot bench run --corpus v1 --arms bare-large,bare-small --repeats 3 --budget-usd 360
+FOLIOT_HOME=<root> foliot bench report --corpus v1
+```
+
+Each run drives `claude -p` headless in a checkout that holds `base_sha` and no other commit, under its own `HOME` with a sandbox profile written into it.
+A per-run `HOME` alone does not hide the hidden checks: it changes what the harness loads, not what its shell can read.
+So before any run, `bench run` asks the first arm to print a hidden check, fetch the landed patch and find the landed commit by every route it can, and refuses to start unless none of it reached the transcript and a denial was recorded.
+`foliot bench probe --without-isolation` is the same probe without the profile, and it prints the check.
+
+Every column comes from the harness's own stream: tokens, cost, wall time, how the run ended and how it was billed.
+The hidden check then runs on `base_sha` plus the worker's changes, in a tree the worker never touched.
+`bench run` refuses before the first run when the per-run caps sum over `--budget-usd` and no `bench estimate` projects the sweep inside it, and it stops when the subscription's weekly window reads 80 percent used.
+`bench report` prints one row per arm and per class with each column's spread, and refuses any row that rests on zero runs.
+
+An isolation claim is only as good as the probe that failed to break it.
 
 ## Building
 
