@@ -60,6 +60,10 @@ type History struct {
 type Manifest struct {
 	Classes  map[string]int `json:"classes"`
 	Refusals []Marker       `json:"history_refusals"`
+	// VisibleExaminedFrom is a regular expression over a visible suite's output whose first
+	// group is its test count; it is data because each test runner prints the count its own way.
+	VisibleExaminedFrom string `json:"visible_examined_from"`
+	visibleRe           *regexp.Regexp
 }
 
 // Marker is one pattern that makes a task not self-contained when its history matches.
@@ -108,6 +112,17 @@ func LoadManifest(path string) (*Manifest, error) {
 		}
 		m.Refusals[i].re = re
 	}
+	if m.VisibleExaminedFrom == "" {
+		return nil, fmt.Errorf("%s: visible_examined_from is absent, so criterion 1 could not tell a green over zero tests from a pass (K7)", path)
+	}
+	re, err := regexp.Compile(m.VisibleExaminedFrom)
+	if err != nil {
+		return nil, fmt.Errorf("%s: visible_examined_from %q does not compile: %v", path, m.VisibleExaminedFrom, err)
+	}
+	if re.NumSubexp() < 1 {
+		return nil, fmt.Errorf("%s: visible_examined_from %q has no group to read the test count from", path, m.VisibleExaminedFrom)
+	}
+	m.visibleRe = re
 	return &m, nil
 }
 
