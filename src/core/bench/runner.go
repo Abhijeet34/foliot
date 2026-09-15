@@ -169,9 +169,9 @@ func (s *session) selectTasks(ids []string) ([]*Task, error) {
 }
 
 // verify certifies the tasks a sweep will use (a5 section 2.16): the base and landed exit
-// codes on bench.run come from here. A task already recorded as verified at the corpus's
-// current, clean HEAD is reused, since one task's verify is minutes of suite runs
-// (measured 2026-09-14: about 6 minutes) and the corpus has not changed since.
+// codes on bench.run come from here. A task is reused from a bench.verified record that
+// carries both visible readings and the task's current content sha, in a clean corpus,
+// since one task's verify is minutes of suite runs and nothing it certified has changed.
 func (s *session) verify(ctx context.Context, tasks []*Task) error {
 	sha, dirty := corpusVersion(filepath.Join(s.Root, "bench"))
 	events, err := log.Read(log.Path(s.Root), 1)
@@ -181,7 +181,11 @@ func (s *session) verify(ctx context.Context, tasks []*Task) error {
 	done := log.Verified(events)
 	var need []string
 	for _, t := range tasks {
-		if v, ok := done[[3]string{s.Corpus, sha, t.ID}]; ok && !dirty {
+		content, err := taskSHA(s.Root, s.Corpus, t.ID)
+		if err != nil {
+			return err
+		}
+		if v, ok := done[[3]string{s.Corpus, t.ID, content}]; ok && !dirty && v.Visible != nil {
 			s.verified[t.ID] = verifiedExits{v.BaseExit, v.LandedExit}
 			continue
 		}
@@ -204,7 +208,8 @@ func (s *session) verify(ctx context.Context, tasks []*Task) error {
 	}
 	for _, r := range sum.Results {
 		s.verified[r.ID] = verifiedExits{r.Base, r.Landed}
-		v := log.BenchVerified{Corpus: s.Corpus, CorpusSHA: sha, Task: r.ID, BaseExit: r.Base, LandedExit: r.Landed, Examined: r.Examined}
+		v := log.BenchVerified{Corpus: s.Corpus, CorpusSHA: sha, Task: r.ID, TaskSHA: r.TaskSHA, BaseExit: r.Base, LandedExit: r.Landed, Examined: r.Examined,
+			Visible: &log.VisibleReadings{Base: reading(r.VisibleBase), Landed: reading(r.VisibleLanded)}}
 		if _, err := s.log.Append(log.Entry{Type: "bench.verified", Actor: "bench", Data: v}); err != nil {
 			return err
 		}
@@ -213,6 +218,10 @@ func (s *session) verify(ctx context.Context, tasks []*Task) error {
 }
 
 type verifiedExits struct{ base, landed int }
+
+func reading(v VisibleRun) log.VisibleReading {
+	return log.VisibleReading{Exit: v.Exit, Examined: v.Examined, WallMS: v.WallMS, CPUMS: v.CPUMS, LoadAtStart: v.LoadAtStart}
+}
 
 type plannedRun struct {
 	arm    Arm

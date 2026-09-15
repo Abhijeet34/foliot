@@ -3,6 +3,8 @@ package bench
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -56,6 +58,7 @@ type Result struct {
 	AdditionsSameAsBase        bool
 	Examined                   int
 	Refusals                   []string
+	TaskSHA                    string // taskSHA of what was verified
 }
 
 // VisibleRun is one run of a task's visible suite, and the classifying re-run a red gets.
@@ -287,7 +290,45 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 	if len(r.Refusals) > 0 {
 		return r, nil
 	}
+	if r.TaskSHA, err = taskSHA(filepath.Dir(bench), filepath.Base(corpusDir), id); err != nil {
+		refuse("record: hashing the task's content: %v", err)
+		return r, nil
+	}
 	return r, &visibleSuite{task: t, mirror: mirror, work: work}
+}
+
+// taskSHA is the hex sha256 over task.json's bytes, then each file under checks/<id>/ in
+// sorted path order, each prefixed by its path relative to that directory and a NUL: what a
+// bench.verified record certifies, so a corpus commit that touches one task re-verifies one.
+func taskSHA(root, corpus, id string) (string, error) {
+	bench := filepath.Join(root, "bench")
+	record, err := os.ReadFile(filepath.Join(bench, "corpus", corpus, id, "task.json"))
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	h.Write(record)
+	checks := filepath.Join(bench, "checks", id)
+	var files []string
+	err = filepath.WalkDir(checks, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			files = append(files, filepath.ToSlash(rel(checks, p)))
+		}
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(files)
+	for _, f := range files {
+		b, err := os.ReadFile(filepath.Join(checks, filepath.FromSlash(f)))
+		if err != nil {
+			return "", err
+		}
+		h.Write([]byte(f + "\x00"))
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // visibleKey is what makes two visible runs the same run.

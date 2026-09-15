@@ -50,7 +50,7 @@ The arms, their models, training cutoffs and per-run caps, each adapter's creden
 Each run drives `claude -p` headless in a checkout that holds `base_sha` and no other commit, under its own `HOME` with a sandbox profile written into it.
 A per-run `HOME` alone does not hide the hidden checks: it changes what the harness loads, not what its shell can read.
 
-Before any run, `bench run` certifies every task in scope, reusing a task's certification from `bench.verified` when the corpus HEAD is unchanged since it was recorded, then runs the hidden check at `landed_sha` in the scoring environment for each task, refusing if that control does not pass: a check environment that cannot pass the landed change would score every arm red, which is a failed control and never a reading.
+Before any run, `bench run` certifies every task in scope, reusing a task's certification from `bench.verified` when the corpus is committed, the record carries both visible suite readings, and the task's `task.json` and hidden check still hash to the record's `task_sha`, then runs the hidden check at `landed_sha` in the scoring environment for each task, refusing if that control does not pass: a check environment that cannot pass the landed change would score every arm red, which is a failed control and never a reading.
 Only then does it ask the first arm to print a hidden check, fetch the landed patch and find the landed commit by every route it can, and refuse to start unless none of it reached the transcript and a denial was recorded.
 `foliot bench probe --without-isolation` is the same probe without the profile, and it prints the check.
 

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Abhijeet34/foliot/internal/testenv"
 	"github.com/Abhijeet34/foliot/src/core/log"
@@ -548,5 +549,87 @@ func TestLoadProfileRefuses(t *testing.T) {
 		if _, err := LoadProfile(root, adapters); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err %v, want %q", name, err, c.want)
 		}
+	}
+}
+
+func verifiedRecords(t *testing.T, root string) []log.BenchVerified {
+	t.Helper()
+	events, err := log.Read(log.Path(root), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []log.BenchVerified
+	for _, e := range events {
+		var v log.BenchVerified
+		if e.Type == "bench.verified" && json.Unmarshal(e.Data, &v) == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func TestVerifyRecordsVisibleColumns(t *testing.T) {
+	r := newRunnerFixture(t)
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}); err != nil {
+		t.Fatalf("Run: %v\n%s", err, r.out)
+	}
+	recs := verifiedRecords(t, r.root)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 bench.verified, got %d", len(recs))
+	}
+	v := recs[0]
+	sum, err := taskSHA(r.root, "v1", "calc-add")
+	if err != nil || v.TaskSHA != sum || len(sum) != 64 {
+		t.Fatalf("task_sha %q, want %q (%v)", v.TaskSHA, sum, err)
+	}
+	if v.Visible == nil {
+		t.Fatalf("bench.verified carries no visible readings: %+v", v)
+	}
+	t.Logf("visible readings: base %+v landed %+v", v.Visible.Base, v.Visible.Landed)
+	for phase, rd := range map[string]log.VisibleReading{"base": v.Visible.Base, "landed": v.Visible.Landed} {
+		if rd.Exit != 0 || rd.Examined != 1 || rd.WallMS <= 0 || rd.CPUMS < 0 {
+			t.Errorf("visible.%s: %+v", phase, rd)
+		}
+	}
+}
+
+func TestSweepReusesAVerifiedTaskAcrossAnUnrelatedCorpusCommit(t *testing.T) {
+	r := newRunnerFixture(t)
+	opts := SweepOptions{Arms: "idle", Tasks: []string{"calc-add"}, Repeats: 1, BudgetUSD: 5}
+	if err := Run(context.Background(), r.cfg, opts); err != nil {
+		t.Fatalf("Run: %v\n%s", err, r.out)
+	}
+	mul, check, _ := r.addMulTask(t)
+	r.saveTask(t, mul, check)
+	r.out.Reset()
+	if err := Run(context.Background(), r.cfg, opts); err != nil {
+		t.Fatalf("second Run: %v\n%s", err, r.out)
+	}
+	if !strings.Contains(r.out.String(), "1 tasks reused from bench.verified, 0 to verify") {
+		t.Fatalf("a corpus commit that adds another task re-verified calc-add:\n%s", r.out)
+	}
+}
+
+func TestSweepDoesNotReuseARecordWithoutTheLandedReading(t *testing.T) {
+	r := newRunnerFixture(t)
+	sum, err := taskSHA(r.root, "v1", "calc-add")
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpusSHA, _ := corpusVersion(filepath.Join(r.root, "bench"))
+	l, err := log.Open(r.root, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := log.BenchVerified{Corpus: "v1", CorpusSHA: corpusSHA, Task: "calc-add", TaskSHA: sum, BaseExit: 1, LandedExit: 0, Examined: 1}
+	if _, err := l.Append(log.Entry{Type: "bench.verified", Actor: "bench", Data: v}); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}); err != nil {
+		t.Fatalf("Run: %v\n%s", err, r.out)
+	}
+	if !strings.Contains(r.out.String(), "0 tasks reused from bench.verified, 1 to verify") {
+		t.Fatalf("a record without the visible readings was reused:\n%s", r.out)
 	}
 }
