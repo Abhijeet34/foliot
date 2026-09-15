@@ -436,17 +436,18 @@ func newCheckout(ctx context.Context, mirror, dir, sha string, overlay []change)
 		return nil, err
 	}
 	untar.Stdin = pipe
-	var stderr bytes.Buffer
-	archive.Stderr, untar.Stderr = &stderr, &stderr
+	// One buffer each: both processes write their stderr from their own copying goroutine.
+	var archiveErr, untarErr bytes.Buffer
+	archive.Stderr, untar.Stderr = &archiveErr, &untarErr
 	if err := untar.Start(); err != nil {
 		return nil, err
 	}
 	if err := archive.Run(); err != nil {
 		_ = untar.Wait()
-		return nil, fmt.Errorf("git archive %s: %v: %s", sha, err, stderr.String())
+		return nil, fmt.Errorf("git archive %s: %v: %s", sha, err, archiveErr.String())
 	}
 	if err := untar.Wait(); err != nil {
-		return nil, fmt.Errorf("tar: %v: %s", err, stderr.String())
+		return nil, fmt.Errorf("tar: %v: %s", err, untarErr.String())
 	}
 	for _, c := range overlay {
 		p := filepath.Join(dir, filepath.FromSlash(c.path))
