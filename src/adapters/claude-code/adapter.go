@@ -95,7 +95,10 @@ func settings(iso *bench.Isolation, home string, uid int) ([]byte, error) {
 	for _, p := range dedupe(append(toolDeny, realPaths(toolDeny)...)) {
 		rules = append(rules, "Read(/"+p+"/**)", "Edit(/"+p+"/**)")
 	}
-	rules = append(rules, "Edit(/"+profileDir+"/**)",
+	for _, p := range dedupe([]string{profileDir, bench.RealPath(profileDir)}) {
+		rules = append(rules, "Edit(/"+p+"/**)")
+	}
+	rules = append(rules,
 		// WebFetch and WebSearch run in-process, outside the sandbox's network proxy, and
 		// would fetch the public landed patch (Fable critique k3 section 1.2 path 1).
 		"WebFetch", "WebSearch")
@@ -111,7 +114,7 @@ func settings(iso *bench.Isolation, home string, uid int) ([]byte, error) {
 				"denyRead":   denyRead,
 				"allowRead":  allowRead,
 				"allowWrite": allowWrite,
-				"denyWrite":  []string{profileDir},
+				"denyWrite":  realPaths([]string{profileDir}),
 			},
 			// The visible suite runs offline once setup has run, so a sandboxed command needs
 			// no host; the harness's own API traffic is in-process and not proxied.

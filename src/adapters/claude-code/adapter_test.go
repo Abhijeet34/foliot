@@ -98,7 +98,7 @@ func TestLaunchWritesTheRunProfileOnlyWhenIsolated(t *testing.T) {
 	sb := s.Sandbox
 	if !sb.Enabled || !sb.FailIfUnavailable || sb.AllowUnsandboxedCommands || !sb.Network.StrictAllowlist || len(sb.Network.AllowedDomains) != 0 ||
 		!slices.Contains(sb.Filesystem.DenyRead, "/root") || !slices.Contains(sb.Filesystem.DenyRead, "/private/var/folders") ||
-		!slices.Contains(sb.Filesystem.AllowRead, run) || !slices.Contains(sb.Filesystem.DenyWrite, filepath.Join(home, ".claude")) ||
+		!slices.Contains(sb.Filesystem.AllowRead, bench.RealPath(run)) || !slices.Contains(sb.Filesystem.DenyWrite, bench.RealPath(filepath.Join(home, ".claude"))) ||
 		len(sb.Credentials.EnvVars) != 1 || sb.Credentials.EnvVars[0].Name != "CLAUDE_CODE_OAUTH_TOKEN" {
 		t.Fatalf("sandbox %+v", sb)
 	}
