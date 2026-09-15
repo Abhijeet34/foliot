@@ -39,6 +39,38 @@ var checkEnv = []string{
 // visibleTimeout bounds one visible suite run; a variable so a test can plant a hang.
 var visibleTimeout = 30 * time.Minute
 
+// wallNow is the wall clock stripped of Go's monotonic reading, which on darwin stops while the
+// machine sleeps; wallPoll is how often a deadline reads it. Variables so a test can plant a sleep.
+var (
+	wallNow  = func() time.Time { return time.Now().Round(0) }
+	wallPoll = time.Second
+)
+
+// withWallTimeout is context.WithTimeout over elapsed wall-clock time, sleep included. Go's timers
+// alone let a 30-minute deadline pass a suite that ran 61 minutes across a 58-minute hibernation
+// (measured 2026-09-15), so the context is also cancelled once the wall clock reads the deadline.
+func withWallTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	now := wallNow
+	deadline := now().Add(timeout)
+	go func() {
+		tick := time.NewTicker(min(wallPoll, timeout))
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if !now().Before(deadline) {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return ctx, cancel
+}
+
 var examinedRe = regexp.MustCompile(`^examined=([0-9]+)$`)
 
 // Options select what Verify examines.
@@ -671,7 +703,7 @@ func (c *checkout) sh(ctx context.Context, command string, env []string, timeout
 // read immediately before it starts.
 func (c *checkout) run(ctx context.Context, command string, env []string, timeout time.Duration, log string) (int, Observed) {
 	var obs Observed
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := withWallTimeout(ctx, timeout)
 	defer cancel()
 	f, err := os.Create(log)
 	if err != nil {

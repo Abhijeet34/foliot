@@ -600,7 +600,7 @@ func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD floa
 	if err != nil {
 		return nil, Observed{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, workerDeadline)
+	ctx, cancel := withWallTimeout(ctx, workerDeadline)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...)
 	cmd.Dir = w.repo

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -451,5 +452,29 @@ func TestVerifyRefusesAHangingVisibleSuiteWithoutRerun(t *testing.T) {
 	}
 	if r.VisibleBase.Exit != 124 || r.VisibleBase.Rerun != nil || runs(t, counter, f.base) != 1 {
 		t.Fatalf("want one run killed with 124 and no re-run, got %+v after %d runs", r.VisibleBase, runs(t, counter, f.base))
+	}
+}
+
+func TestCheckoutDeadlineCountsTimeTheMachineSlept(t *testing.T) {
+	testenv.Isolate(t)
+	// The first wall reading sets the deadline; every later one is an hour on, as after a
+	// machine sleep that Go's monotonic timers do not see on darwin.
+	start := time.Now()
+	var readings atomic.Int32
+	oldNow, oldPoll := wallNow, wallPoll
+	wallNow = func() time.Time {
+		if readings.Add(1) == 1 {
+			return start
+		}
+		return start.Add(time.Hour)
+	}
+	wallPoll = 50 * time.Millisecond
+	t.Cleanup(func() { wallNow, wallPoll = oldNow, oldPoll })
+	dir := t.TempDir()
+	co := &checkout{dir: dir}
+	began := time.Now()
+	rc := co.sh(context.Background(), "sleep 10", nil, 30*time.Minute, filepath.Join(dir, "sleep.log"))
+	if took := time.Since(began); rc != 124 || took > 5*time.Second {
+		t.Fatalf("a 30-minute deadline an hour of wall time ago: exit %d after %s, want 124 at once", rc, took)
 	}
 }
