@@ -394,7 +394,7 @@ func (s *session) sweep(ctx context.Context, runs []plannedRun, tasks []*Task, b
 		return nil, err
 	}
 	if !reading.proven() {
-		return nil, refusef("isolation probe seq %d did not prove isolation: lines_seen=%d diff_seen=%d token_seen=%t denials=%d attempts=%d", probeSeq, reading.LinesSeen, reading.DiffSeen, reading.TokenSeen, reading.Denials, reading.Attempts)
+		return nil, refusef("isolation probe seq %d did not prove isolation: lines_seen=%d diff_seen=%d token_seen=%t denials=%d attempts=%d clock_seen=%s", probeSeq, reading.LinesSeen, reading.DiffSeen, reading.TokenSeen, reading.Denials, reading.Attempts, reading.clockSeen())
 	}
 	costs := map[string][]float64{}
 	spent := runs[0].cap // the probe is paid for too; an unknown cost counts at its cap
@@ -435,11 +435,12 @@ func (s *session) rateLimitOK() error {
 // record is what the runner keeps and the worker is denied.
 type workspace struct {
 	id, work, record, repo string
+	at                     time.Time // the task's pinned clock
 }
 
 func (s *session) newWorkspace(task *Task, label string) (*workspace, error) {
 	id := fmt.Sprintf("%s.%s.%s", task.ID, label, s.Now().UTC().Format("20060102T150405.000Z"))
-	w := &workspace{id: id, work: filepath.Join(s.Root, "bench", "work", id), record: filepath.Join(s.Root, "bench", "runs", id)}
+	w := &workspace{id: id, work: filepath.Join(s.Root, "bench", "work", id), record: filepath.Join(s.Root, "bench", "runs", id), at: task.at}
 	w.repo = filepath.Join(w.work, "repo")
 	for _, d := range []string{"home", "config", "state", "cache", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(w.work, d), 0o700); err != nil {
@@ -512,7 +513,11 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 		return 0, ProbeReading{}, err
 	}
 	h := s.Adapters[arm.Adapter]
-	st, _, err := s.launch(ctx, w, arm, capUSD, iso, probePrompt(s.Root, task, h.CredentialEnv()))
+	clock, err := clockEnv(w.work, task.at)
+	if err != nil {
+		return 0, ProbeReading{}, err
+	}
+	st, _, err := s.launch(ctx, w, arm, capUSD, iso, probePrompt(s.Root, task, h.CredentialEnv()), clock)
 	if err != nil {
 		return 0, ProbeReading{}, err
 	}
@@ -521,6 +526,7 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 		return 0, ProbeReading{}, err
 	}
 	reading := judgeProbe(check, answerLines(diff), s.tokens[arm.Adapter], st)
+	reading.ClockWant = task.at
 	p := log.BenchProbe{
 		Corpus: s.Corpus, Task: task.ID, Arm: arm.Name, Model: arm.Model, Isolation: mode,
 		CheckLines: reading.CheckLines, LinesSeen: reading.LinesSeen, Denials: reading.Denials,
@@ -533,8 +539,8 @@ func (s *session) probe(ctx context.Context, arm Arm, task *Task, isolated bool,
 	if err != nil {
 		return 0, reading, err
 	}
-	fmt.Fprintf(s.Out, "probe: seq=%d arm=%s task=%s isolation=%s check_lines=%d lines_seen=%d diff_lines=%d diff_seen=%d token_seen=%t denials=%d attempts=%d proven=%t cost_usd=%s week_used=%s transcript=%s\n",
-		seq, arm.Name, task.ID, mode, reading.CheckLines, reading.LinesSeen, reading.DiffLines, reading.DiffSeen, reading.TokenSeen, reading.Denials, reading.Attempts, p.Proven, fmtCost(p.CostUSD), fmtPct(st.WeekUsed), filepath.Join(w.record, "stream.jsonl"))
+	fmt.Fprintf(s.Out, "probe: seq=%d arm=%s task=%s isolation=%s check_lines=%d lines_seen=%d diff_lines=%d diff_seen=%d token_seen=%t denials=%d attempts=%d clock_seen=%s proven=%t cost_usd=%s week_used=%s transcript=%s\n",
+		seq, arm.Name, task.ID, mode, reading.CheckLines, reading.LinesSeen, reading.DiffLines, reading.DiffSeen, reading.TokenSeen, reading.Denials, reading.Attempts, reading.clockSeen(), p.Proven, fmtCost(p.CostUSD), fmtPct(st.WeekUsed), filepath.Join(w.record, "stream.jsonl"))
 	if len(reading.Seen) > 0 {
 		// Line numbers only: the check's text must not leave the denied directories.
 		fmt.Fprintf(s.Out, "  seen: check lines %s\n", reading.seenAt())
@@ -570,13 +576,13 @@ func Probe(ctx context.Context, cfg Config, armName, taskID string, isolated boo
 		return err
 	}
 	if !isolated || !reading.proven() {
-		return refusef("probe seq %d: isolation not proven (lines_seen=%d diff_seen=%d token_seen=%t denials=%d attempts=%d)", seq, reading.LinesSeen, reading.DiffSeen, reading.TokenSeen, reading.Denials, reading.Attempts)
+		return refusef("probe seq %d: isolation not proven (lines_seen=%d diff_seen=%d token_seen=%t denials=%d attempts=%d clock_seen=%s)", seq, reading.LinesSeen, reading.DiffSeen, reading.TokenSeen, reading.Denials, reading.Attempts, reading.clockSeen())
 	}
 	return nil
 }
 
-// launch runs the harness headless in the workspace and reads its transcript.
-func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD float64, iso *Isolation, prompt string) (*Reading, Observed, error) {
+// launch runs the harness headless in the workspace, under clock, and reads its transcript.
+func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD float64, iso *Isolation, prompt string, clock []string) (*Reading, Observed, error) {
 	if err := os.WriteFile(filepath.Join(w.record, "prompt.md"), []byte(prompt), 0o600); err != nil {
 		return nil, Observed{}, err
 	}
@@ -591,6 +597,11 @@ func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD floa
 		return nil, Observed{}, err
 	}
 	defer errLog.Close()
+	env := append(s.env(w), clock...)
+	if err := clockControl(ctx, env, w.repo, w.at); err != nil {
+		fmt.Fprintln(errLog, err)
+		return nil, Observed{}, refusef("task run %s: %v, so no worker launched (log %s)", w.id, err, errLog.Name())
+	}
 
 	h := s.Adapters[arm.Adapter]
 	c, err := h.Launch(Launch{
@@ -604,7 +615,7 @@ func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD floa
 	defer cancel()
 	cmd := exec.CommandContext(ctx, c.Argv[0], c.Argv[1:]...)
 	cmd.Dir = w.repo
-	cmd.Env = mergeEnv(s.env(w), c.Env)
+	cmd.Env = mergeEnv(env, c.Env)
 	cmd.Stdout, cmd.Stderr = out, errLog
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
@@ -674,12 +685,16 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 			return nil, fmt.Errorf("task %s: setup exited %d before launch (log %s)", task.ID, rc, setupLog)
 		}
 	}
+	clock, err := clockEnv(w.work, task.at)
+	if err != nil {
+		return nil, err
+	}
 	runSeq, err := s.log.Append(log.Entry{Type: "bench.run", Actor: "bench", Data: run})
 	if err != nil {
 		return nil, err
 	}
 
-	st, obs, err := s.launch(ctx, w, r.arm, r.cap, s.isolation(w), renderPrompt(task))
+	st, obs, err := s.launch(ctx, w, r.arm, r.cap, s.isolation(w), renderPrompt(task), clock)
 	if err != nil {
 		return nil, err
 	}
@@ -797,7 +812,15 @@ func (s *session) runCheck(ctx context.Context, mirror string, task *Task, sha s
 	if err := os.MkdirAll(filepath.Join(co.dir, ".tmp"), 0o700); err != nil {
 		return 0, 0, false, err
 	}
-	env := append([]string{"TMPDIR=" + filepath.Join(co.dir, ".tmp")}, checkEnv...)
+	clock, err := clockEnv(filepath.Join(co.dir, ".tmp"), task.at)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	env := append(append([]string{"TMPDIR=" + filepath.Join(co.dir, ".tmp")}, checkEnv...), clock...)
+	if err := clockControl(ctx, env, co.dir, task.at); err != nil {
+		_ = os.WriteFile(logPath, []byte(err.Error()+"\n"), 0o600)
+		return 0, 0, false, refusef("task %s: %v, so the %s check did not run (log %s)", task.ID, err, name, logPath)
+	}
 	rc := co.sh(ctx, command, env, checkTimeout, logPath)
 	return rc, lastExamined(logPath), confined, nil
 }
@@ -897,6 +920,7 @@ func renderPrompt(t *Task) string {
 	fmt.Fprintf(&b, "<request sha256=%q>\n%s\n</request>\n\n", t.RequestSHA256, t.Request)
 	fmt.Fprintf(&b, "Repository: %s, checked out at %s in your working directory.\n", t.Repository, t.BaseSHA)
 	fmt.Fprintf(&b, "Visible check: `%s` (dependencies are installed).\n", t.VisibleCheck)
+	fmt.Fprintf(&b, "Clock: this workspace's node clock is pinned to %s; leave NODE_OPTIONS as it is.\n", t.ClockAt)
 	fmt.Fprintf(&b, "Scope: %s.\n\n", scope)
 	b.WriteString(authorisation)
 	fmt.Fprintf(&b, "\n<request sha256=%q>\n%s\n</request>\n", t.RequestSHA256, t.Request)

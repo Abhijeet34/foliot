@@ -283,10 +283,14 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 		return r, nil
 	}
 	refuse := func(format string, a ...any) { r.Refusals = append(r.Refusals, fmt.Sprintf(format, a...)) }
+	clockRefused := false
 
 	// Each phase is a fresh export of the pinned tree with no .git, so a check can read the
 	// code it tests and nothing that tells it which commit it is in.
 	run := func(phase, sha string, overlay []change) int {
+		if clockRefused {
+			return notRun
+		}
 		co, err := newCheckout(ctx, mirror, filepath.Join(work, phase), sha, overlay)
 		if err != nil {
 			refuse("criterion 3: %s checkout: %v", phase, err)
@@ -303,7 +307,19 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 			refuse("criterion 3: copying the check into the %s checkout: %v", phase, err)
 			return notRun
 		}
-		return co.sh(ctx, "sh .bench-check/check.sh", checkEnv, checkTimeout, filepath.Join(work, phase+"-check.log"))
+		log := filepath.Join(work, phase+"-check.log")
+		clock, err := clockEnv(work, t.at)
+		env := append(append([]string{}, checkEnv...), clock...)
+		if err == nil {
+			err = clockControl(ctx, env, co.dir, t.at)
+		}
+		if err != nil {
+			clockRefused = true
+			_ = os.WriteFile(log, []byte(err.Error()+"\n"), 0o644)
+			refuse("criterion 3: %v, so the %s check did not run (log %s)", err, phase, log)
+			return notRun
+		}
+		return co.sh(ctx, "sh .bench-check/check.sh", env, checkTimeout, log)
 	}
 
 	r.Base = run("base", t.BaseSHA, nil)
@@ -369,8 +385,9 @@ func taskSHA(root, corpus, id string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// visibleKey is what makes two visible runs the same run.
-type visibleKey struct{ repository, sha, setup, check string }
+// visibleKey is what makes two visible runs the same run; the same commit under another clock
+// is another run.
+type visibleKey struct{ repository, sha, setup, check, clockAt string }
 
 // verifyVisible is pass 2: each distinct visible run of the tasks pass 1 left unrefused, in
 // corpus order, one at a time, its reading and logs given to every task holding its key.
@@ -386,7 +403,7 @@ func verifyVisible(ctx context.Context, m *Manifest, results []Result, suites []
 			continue
 		}
 		for _, h := range []struct{ phase, sha string }{{"base", vs.task.BaseSHA}, {"landed", vs.task.LandedSHA}} {
-			k := visibleKey{vs.task.Repository, h.sha, vs.task.Setup, vs.task.VisibleCheck}
+			k := visibleKey{vs.task.Repository, h.sha, vs.task.Setup, vs.task.VisibleCheck, vs.task.ClockAt}
 			if _, ok := holders[k]; !ok {
 				keys = append(keys, k)
 			}
@@ -418,9 +435,9 @@ func verifyVisible(ctx context.Context, m *Manifest, results []Result, suites []
 // visibleOutcome is one key's reading and what, if anything, refuses it.
 type visibleOutcome struct {
 	run VisibleRun
-	// failure is "" for a pass, or one of clone, setup, zero, red, flaky, killed.
+	// failure is "" for a pass, or one of clone, setup, clock, zero, red, flaky, killed.
 	failure string
-	detail  string // the clone error, or the setup log's suffix
+	detail  string // the clone or clock control error, or the setup log's suffix
 	setup   int    // the setup exit code
 }
 
@@ -446,6 +463,8 @@ func (o visibleOutcome) refusal(k visibleKey, phase, work string) string {
 		return fmt.Sprintf("criterion 1: the visible checkout at %s_sha: %s", phase, o.detail)
 	case "setup":
 		return fmt.Sprintf("criterion 1: setup `%s` exited %d for the visible check at %s_sha (log %s)", k.setup, o.setup, phase, visibleLog(work, phase, o.detail))
+	case "clock":
+		return fmt.Sprintf("criterion 1: %s, so the visible check at %s_sha did not run (log %s)", o.detail, phase, suite)
 	case "zero":
 		return fmt.Sprintf("criterion 1: the visible check `%s` exits 0 at %s_sha over 0 tests (K7) (log %s)", check, phase, suite)
 	case "killed":
@@ -475,7 +494,17 @@ func runVisible(ctx context.Context, m *Manifest, mirror, work, phase string, k 
 			}
 		}
 		log := visibleLog(work, phase, suffix)
-		rc, obs := co.run(ctx, k.check, nil, visibleTimeout, log)
+		// Each run, a re-run included, starts at the pin rather than at another run's elapsed time.
+		at, _ := time.Parse(time.RFC3339, k.clockAt)
+		clock, err := clockEnv(work, at)
+		if err == nil {
+			err = clockControl(ctx, append([]string{"CI=true"}, clock...), co.dir, at)
+		}
+		if err != nil {
+			_ = os.WriteFile(log, []byte(err.Error()+"\n"), 0o644)
+			return v, &visibleOutcome{run: v, failure: "clock", detail: err.Error()}
+		}
+		rc, obs := co.run(ctx, k.check, clock, visibleTimeout, log)
 		return VisibleRun{Exit: rc, Examined: countFrom(m.visibleRe, log), WallMS: obs.WallMS, CPUMS: obs.CPUMS, LoadAtStart: obs.LoadAtStart}, nil
 	}
 	first, failed := once("")

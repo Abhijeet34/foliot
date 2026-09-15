@@ -40,6 +40,29 @@ const goodCheck = `. ./lib.sh
 echo examined=1
 `
 
+// pinnedCheck exits 1 unless node's day is the fixture's pinned day and a file node's kernel
+// just wrote reads within 5 s of node's Date.now(), which a Date-only pin fails by days.
+const pinnedCheck = `node -e '
+const fs = require("fs")
+const day = new Date().toISOString().slice(0, 10)
+if (day !== process.argv[1]) { console.log("node sees " + day + ", want " + process.argv[1]); process.exit(1) }
+fs.writeFileSync("clock-probe", "x")
+const drift = Math.abs(fs.statSync("clock-probe").mtimeMs - Date.now())
+if (drift > 5000) { console.log("a fresh mtime is " + drift + " ms from Date.now()"); process.exit(1) }
+' 2025-06-02 || exit 1
+`
+
+// hostNode is the directory of the node the host resolves, read at init, before testenv moves
+// HOME: a version manager's shim resolves node through HOME and would install it afresh under
+// a test's own.
+var hostNode = func() string {
+	out, err := exec.Command("node", "-p", "process.execPath").Output()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(strings.TrimSpace(string(out)))
+}()
+
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -64,6 +87,10 @@ func write(t *testing.T, path, content string) {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	testenv.Isolate(t)
+	if hostNode == "" {
+		t.Fatal("node is not on PATH, and every pinned run's clock control needs it")
+	}
+	t.Setenv("PATH", hostNode+string(filepath.ListSeparator)+os.Getenv("PATH"))
 	for k, v := range map[string]string{
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
 		"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@invalid",
@@ -532,5 +559,89 @@ func TestCheckoutDeadlineCountsTimeTheMachineSlept(t *testing.T) {
 	rc := co.sh(context.Background(), "sleep 10", nil, 30*time.Minute, filepath.Join(dir, "sleep.log"))
 	if took := time.Since(began); rc != 124 || took > 5*time.Second {
 		t.Fatalf("a 30-minute deadline an hour of wall time ago: exit %d after %s, want 124 at once", rc, took)
+	}
+}
+
+func TestVerifyPinsTheVisibleSuite(t *testing.T) {
+	f := newFixture(t)
+	f.task.VisibleCheck = `d=$(node -p 'new Date().toISOString().slice(0, 10)'); [ "$d" = 2025-06-02 ] || { echo "node sees $d"; exit 1; }; sh test.sh`
+	f.save(t, defaultManifest())
+	s, r, out := f.verify(t)
+	if !s.Success() || r.VisibleBase.Exit != 0 || r.VisibleLanded.Exit != 0 {
+		t.Fatalf("want the visible suite green on the pinned day at base and landed, got %+v\n%s", r, out)
+	}
+}
+
+func TestVerifyPinsTheHiddenCheck(t *testing.T) {
+	f := newFixture(t)
+	f.check = pinnedCheck + goodCheck
+	f.save(t, defaultManifest())
+	s, r, out := f.verify(t)
+	if !s.Success() || r.Landed != 0 || r.Base == 0 {
+		t.Fatalf("want the pinned check green at landed and red at base, got %+v\n%s", r, out)
+	}
+	for _, phase := range []string{"base", "landed", "additions"} {
+		b, _ := os.ReadFile(filepath.Join(f.root, "bench", "verify", "calc-add", phase+"-check.log"))
+		if bytes.Contains(b, []byte("node sees")) || bytes.Contains(b, []byte("from Date.now()")) {
+			t.Errorf("the %s check read an unpinned clock:\n%s", phase, b)
+		}
+	}
+}
+
+func TestVerifyRefusesAClockControlThatReadsRealTime(t *testing.T) {
+	f := newFixture(t)
+	counter := t.TempDir()
+	f.task.VisibleCheck = counting(counter, "sh test.sh")
+	f.check = `echo run >> "` + counter + `/check"` + "\n" + goodCheck
+	f.save(t, defaultManifest())
+	// A node that ignores NODE_OPTIONS and prints the wall clock.
+	shim := t.TempDir()
+	write(t, filepath.Join(shim, "node"), "#!/bin/sh\necho \"$(date +%s)000\"\n")
+	os.Chmod(filepath.Join(shim, "node"), 0o755)
+	t.Setenv("PATH", shim+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	s, r, out := f.verify(t)
+	want := "clock control: node read " + time.Now().UTC().Format("2006-01-02")
+	if s.Success() || !strings.Contains(out, want) || !strings.Contains(out, "for a pin at "+fixtureClock) {
+		t.Fatalf("want a refusal containing %q and the pin:\n%s", want, out)
+	}
+	if entries, _ := os.ReadDir(counter); len(entries) != 0 || r.Base != notRun || r.VisibleBase.Exit != notRun {
+		t.Fatalf("a suite ran after the control failed: %d commits counted, %+v", len(entries), r)
+	}
+	if n := strings.Count(out, "clock control:"); n != 1 {
+		t.Errorf("want one clock refusal for the task, got %d:\n%s", n, out)
+	}
+}
+
+func TestVerifyKeysVisibleRoundsByClock(t *testing.T) {
+	f := newFixture(t)
+	counter := t.TempDir()
+	f.task.VisibleCheck = counting(counter, "sh test.sh")
+	mul, check, m := f.addMulTask(t)
+	mul.VisibleCheck = f.task.VisibleCheck
+	mul.ClockAt = "2025-06-03T12:00:00Z"
+	f.save(t, m)
+	f.saveTask(t, mul, check)
+	s, out := verifyAll(t, f.root, 2)
+	if !s.Success() {
+		t.Fatalf("want both tasks certified:\n%s", out)
+	}
+	if n := runs(t, counter, f.landed); n != 2 {
+		t.Fatalf("the sha both tasks share ran %d times under two clocks, want 2", n)
+	}
+}
+
+// Two node processes started seconds apart must shift a kernel mtime by the same offset:
+// a per-process anchor turned m4's warm index cold (k5 section 6.1).
+func TestClockOffsetIsConstantAcrossSiblingProcesses(t *testing.T) {
+	f := newFixture(t)
+	mtime := `node -p 'Math.floor(require("fs").statSync("shared").mtimeMs)'`
+	f.task.VisibleCheck = `touch shared && ` + mtime + ` > first && sleep 2 && ` + mtime + ` > second && ` +
+		`{ cmp first second || { echo "sibling processes read $(cat first) and $(cat second)"; exit 1; }; } && ` +
+		`{ [ $(( $(date +%s) - $(cat first) / 1000 )) -gt 86400 ] || { echo "the mtime $(cat first) is within a day of the wall clock"; exit 1; }; } && sh test.sh`
+	f.save(t, defaultManifest())
+	s, r, out := f.verify(t)
+	if !s.Success() || r.VisibleBase.Exit != 0 {
+		b, _ := os.ReadFile(filepath.Join(f.root, "bench", "verify", "calc-add", "visible-base.log"))
+		t.Fatalf("want one offset across sibling processes, got %+v\n%s\n%s", r, out, b)
 	}
 }

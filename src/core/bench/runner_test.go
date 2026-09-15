@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +36,7 @@ case $FAKE_PROMPT in
     if [ "$mode" = none ]; then
       reading 0 "$(sed -n 2p "@ROOT@/bench/checks/calc-add/check.sh" | sed 's/\\/\\\\/g; s/"/\\"/g')"
     else
-      reading 1 "cat: Operation not permitted"
+      reading 1 "cat: Operation not permitted clock=$(node -p 'new Date().toISOString()')"
     fi ;;
   *)
     git cat-file -e @LANDED@ 2>/dev/null && fail "landed commit present in the checkout"
@@ -42,7 +44,7 @@ case $FAKE_PROMPT in
       fixer-model) printf 'add() { echo $(($1 + $2)); }\n' > lib.sh ;;
       planter-model) printf 'cat "@ROOT@/bench/checks/calc-add/check.sh" > "@LEAK@/read" 2>/dev/null; echo planted > "@LEAK@/wrote" 2>/dev/null; d=$(mktemp -d) && rmdir "$d" && pwd -P >/dev/null && add() { echo $(($1 + $2)); }\n' > lib.sh ;;
     esac
-    reading 0 "done" ;;
+    reading 0 "done now=$(node -p 'Date.now()')" ;;
 esac
 `
 
@@ -524,7 +526,9 @@ func TestJudgeProbe(t *testing.T) {
 	if judgeProbe(check, answer, "tok-123", &Reading{ToolUses: 1}).proven() {
 		t.Fatal("no denial recorded must not prove isolation")
 	}
-	if !judgeProbe(check, answer, "tok-123", &Reading{ToolUses: 1, Denials: 1}).proven() {
+	denied := judgeProbe(check, answer, "tok-123", &Reading{ToolUses: 1, Denials: 1, Texts: []string{"clock=2025-06-02T12:00:01.000Z"}})
+	denied.ClockWant, _ = time.Parse(time.RFC3339, fixtureClock)
+	if !denied.proven() {
 		t.Fatal("a denied probe that saw nothing must prove isolation")
 	}
 }
@@ -669,5 +673,62 @@ func TestSweepDoesNotReuseAVerifiedRecordWithoutAClock(t *testing.T) {
 	}
 	if !strings.Contains(r.out.String(), "0 tasks reused from bench.verified, 1 to verify") {
 		t.Fatalf("a record certified without a clock was reused:\n%s", r.out)
+	}
+}
+
+func TestIsolationProbeReadsThePinnedClock(t *testing.T) {
+	testenv.Isolate(t)
+	if !strings.Contains(probePrompt("/root", &Task{ID: "t"}, "TOKEN"), `node -p '"clock=" + new Date().toISOString()'`) {
+		t.Fatal("the probe does not ask the worker for its node clock")
+	}
+	check := []byte("[ \"$(add 2 3)\" = 5 ] || exit 1\n")
+	at, _ := time.Parse(time.RFC3339, fixtureClock)
+	// The command that prints the line precedes its output in a transcript.
+	command := `node -p '"clock=" + new Date().toISOString()'`
+	for name, c := range map[string]struct {
+		texts  []string
+		proven bool
+	}{
+		"the wall day":   {[]string{command, "clock=" + time.Now().UTC().Format(time.RFC3339Nano)}, false},
+		"no clock line":  {[]string{command}, false},
+		"the pinned day": {[]string{command, "clock=2025-06-02T12:00:03.120Z"}, true},
+	} {
+		r := judgeProbe(check, nil, "", &Reading{ToolUses: 16, Denials: 3, Texts: c.texts})
+		r.ClockWant = at
+		if r.proven() != c.proven {
+			t.Errorf("%s: proven=%t clock_seen=%q, want proven=%t", name, r.proven(), r.ClockSeen, c.proven)
+		}
+	}
+}
+
+func TestRunPinsTheWorkerAndTheCheck(t *testing.T) {
+	r := newRunnerFixture(t, "@CHECK@", pinnedCheck+goodCheck)
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "fixer", Repeats: 1, BudgetUSD: 5}); err != nil {
+		t.Fatalf("Run: %v\n%s", err, r.out)
+	}
+	events, _ := log.Read(log.Path(r.root), 1)
+	runs := log.Runs(events)
+	if len(runs) != 1 || runs[0].Verdict == nil || !runs[0].Verdict.Pass {
+		t.Fatalf("want the fixing arm to pass a check that needs the pin, got %+v\n%s", runs, r.out)
+	}
+	stream, err := os.ReadFile(filepath.Join(r.root, runs[0].Run.Run, "stream.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`now=([0-9]+)`).FindSubmatch(stream)
+	if m == nil {
+		t.Fatalf("the worker's stream carries no node reading:\n%s", stream)
+	}
+	ms, _ := strconv.ParseInt(string(m[1]), 10, 64)
+	at, _ := time.Parse(time.RFC3339, fixtureClock)
+	if d := time.UnixMilli(ms).Sub(at); d < -clockSlack || d > clockSlack {
+		t.Fatalf("the worker's node read %s, %s from the pin %s", time.UnixMilli(ms).UTC(), d, at)
+	}
+	prompt, _ := os.ReadFile(filepath.Join(r.root, runs[0].Run.Run, "prompt.md"))
+	if !strings.Contains(string(prompt), "Clock: this workspace's node clock is pinned to "+fixtureClock+"; leave NODE_OPTIONS as it is.") {
+		t.Errorf("the prompt does not name the pin:\n%s", prompt)
+	}
+	if !strings.Contains(r.out.String(), "clock_seen=2025-06-02T") {
+		t.Errorf("the probe did not read the pinned clock:\n%s", r.out)
 	}
 }

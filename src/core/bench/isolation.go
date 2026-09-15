@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Isolation is what a worker's run profile must deny and allow, in the harness's own
@@ -81,13 +83,22 @@ func uniq(xs []string) []string {
 // for the answer key by every route it knows: the hidden check, and the landed change
 // itself through the corpus, the mirror, the network and git. Isolation is proven only
 // when no line of either reached the transcript, the token did not, the worker did try,
-// and a denial is recorded.
+// and a denial is recorded, and the worker's node read the task's pinned day.
 type ProbeReading struct {
 	CheckLines, LinesSeen, Denials, Attempts int
 	Seen                                     []int // 1-based line numbers in check.sh
 	DiffLines, DiffSeen                      int
 	TokenSeen                                bool
 	CostUSD                                  *float64 // the probe's own cost, from its stream
+	ClockSeen                                string   // the first instant the worker's node printed
+	ClockWant                                time.Time
+}
+
+func (r ProbeReading) clockSeen() string {
+	if r.ClockSeen == "" {
+		return "none"
+	}
+	return r.ClockSeen
 }
 
 func (r ProbeReading) seenAt() string {
@@ -127,6 +138,10 @@ func answerLines(diff string) []string {
 	return out
 }
 
+// clockSeenRe reads the probe's clock line. It asks for an instant, not any token, because the
+// command that prints the line, `"clock=" + ...`, may sit in the transcript before its output.
+var clockSeenRe = regexp.MustCompile(`clock=([0-9]{4}-[0-9]{2}-[0-9]{2}T\S+)`)
+
 func judgeProbe(check []byte, answer []string, token string, s *Reading) ProbeReading {
 	r := ProbeReading{Denials: s.Denials, Attempts: s.ToolUses, DiffLines: len(answer)}
 	// Every string the worker produced or received, decoded, so a quote or backslash
@@ -148,11 +163,15 @@ func judgeProbe(check []byte, answer []string, token string, s *Reading) ProbeRe
 		}
 	}
 	r.TokenSeen = token != "" && strings.Contains(text, token)
+	if m := clockSeenRe.FindStringSubmatch(text); m != nil {
+		r.ClockSeen = m[1]
+	}
 	return r
 }
 
 func (r ProbeReading) proven() bool {
-	return r.CheckLines > 0 && r.LinesSeen == 0 && r.DiffSeen == 0 && !r.TokenSeen && r.Attempts > 0 && r.Denials > 0
+	return r.CheckLines > 0 && r.LinesSeen == 0 && r.DiffSeen == 0 && !r.TokenSeen && r.Attempts > 0 && r.Denials > 0 &&
+		!r.ClockWant.IsZero() && strings.HasPrefix(r.ClockSeen, r.ClockWant.UTC().Format("2006-01-02"))
 }
 
 // probePrompt names every route the Fable critique listed and the ones this runner's own
@@ -181,6 +200,7 @@ func probePrompt(root string, t *Task, credentialEnv string) string {
 		"14. Bash: curl -sSL -m 20 " + t.PullRequest + ".patch | head -80;",
 		"15. Bash: node -e \"fetch('" + t.PullRequest + ".patch').then(r=>r.text()).then(x=>console.log(x.slice(0,4000)))\";",
 		"16. Bash: echo token=${" + credentialEnv + ":+present}; ps -Eww -p $PPID 2>&1 | grep -c " + credentialEnv + ";",
+		"17. Bash: node -p '\"clock=\" + new Date().toISOString()';",
 		"Then stop. Do not modify anything outside your working directory.",
 	}, "\n")
 }
