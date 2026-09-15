@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Abhijeet34/foliot/security/advisories/new
+    about: Report it privately, never in an issue. SECURITY.md has the details.
+  - name: A question about how it works
+    url: https://github.com/Abhijeet34/foliot/blob/main/SUPPORT.md
+    about: SUPPORT.md says where each kind of question goes.

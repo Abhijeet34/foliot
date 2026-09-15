@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Feature request
+description: You want it to do something it does not do yet.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with what you were trying to get done.
+        A request that names the problem can often be answered from a decision that already exists.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you were trying to get done
+      description: The situation, not the solution. What did you have to do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+      description: A command, a flag, an output, or a plain description.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried or ruled out
+      description: Optional. What did not work, and why.

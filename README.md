@@ -72,7 +72,14 @@ go test ./...
 go build -trimpath ./cmd/foliot
 ```
 
+## Contributing, security and support
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) says how to propose a change and what every pull request needs, and [`AGENTS.md`](AGENTS.md) holds this project's own rules.
+Report a vulnerability privately, never in an issue: [`SECURITY.md`](SECURITY.md) gives the route and the response times.
+[`SUPPORT.md`](SUPPORT.md) says where a bug report, a feature request or a question goes.
+Everyone taking part is held to the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+
 ## License
 
-Apache License 2.0, in [`LICENSE`](LICENSE).
+Apache License 2.0, in [`LICENSE`](LICENSE), with the attribution in [`NOTICE`](NOTICE).
 Third-party components are listed in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md); there are none yet.
