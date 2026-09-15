@@ -28,6 +28,13 @@ type fixture struct {
 	check        string
 }
 
+// The fixture's commits are dated and its tasks pinned a day later, on a day no test runs on,
+// so a suite that reads the wall clock is told apart from one that reads the pin.
+const (
+	fixtureCommitted = "2025-06-01T10:00:00Z"
+	fixtureClock     = "2025-06-02T12:00:00Z"
+)
+
 const goodCheck = `. ./lib.sh
 [ "$(add 2 3)" = 5 ] || { echo "add 2 3 is $(add 2 3)"; exit 1; }
 echo examined=1
@@ -60,6 +67,7 @@ func newFixture(t *testing.T) *fixture {
 	for k, v := range map[string]string{
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
 		"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@invalid",
+		"GIT_AUTHOR_DATE": fixtureCommitted, "GIT_COMMITTER_DATE": fixtureCommitted,
 	} {
 		t.Setenv(k, v)
 	}
@@ -86,6 +94,7 @@ func newFixture(t *testing.T) *fixture {
 		Repository: f.src, BaseSHA: f.base, LandedSHA: f.landed, PullRequest: pr,
 		VisibleCheck: "sh test.sh", Scope: Scope{Files: []string{"lib.sh"}},
 		History: History{Source: "archive.md", Item: "calc-add", Text: "- [x] calc-add - add subtracts " + pr},
+		ClockAt: fixtureClock,
 	}
 	f.check = goodCheck
 	return f
@@ -111,6 +120,9 @@ func defaultManifest() Manifest {
 		Classes:             map[string]int{"defect": 1, "feature": 0, "refactor": 0},
 		Refusals:            []Marker{{What: "a held decision", Pattern: `(?i)held for a decision`}},
 		VisibleExaminedFrom: `(?m)^(?:ℹ|#) tests ([0-9]+)$`,
+		Clock: struct {
+			Kind string `json:"kind"`
+		}{"node"},
 	}
 }
 
@@ -256,7 +268,9 @@ func TestVerifyRefusesAnUncommittedCorpus(t *testing.T) {
 
 func TestVerifyRefusesZeroTasks(t *testing.T) {
 	f := newFixture(t)
-	f.save(t, Manifest{Classes: map[string]int{}, Refusals: defaultManifest().Refusals, VisibleExaminedFrom: defaultManifest().VisibleExaminedFrom})
+	m := defaultManifest()
+	m.Classes = map[string]int{}
+	f.save(t, m)
 	if err := os.RemoveAll(filepath.Join(f.root, "bench", "corpus", "v1", "calc-add")); err != nil {
 		t.Fatal(err)
 	}
@@ -285,6 +299,48 @@ func TestLoadManifestRefusesNoHistoryMarkers(t *testing.T) {
 		if _, err := LoadManifest(path); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: want a refusal containing %q, got %v", name, c.want, err)
 		}
+	}
+}
+
+func TestLoadManifestRefusesAnUnknownClockKind(t *testing.T) {
+	testenv.Isolate(t)
+	base := `"classes": {"defect": 1}, "history_refusals": [{"what": "a hold", "pattern": "hold"}], "visible_examined_from": "tests ([0-9]+)"`
+	for name, c := range map[string]struct{ manifest, want string }{
+		"no clock":             {`{` + base + `}`, `clock.kind "" is not one this runner can pin (node)`},
+		"a python clock":       {`{` + base + `, "clock": {"kind": "python"}}`, `clock.kind "python" is not one this runner can pin (node)`},
+		"a clock with no kind": {`{` + base + `, "clock": {}}`, `clock.kind ""`},
+	} {
+		path := filepath.Join(t.TempDir(), "corpus.json")
+		write(t, path, c.manifest)
+		if _, err := LoadManifest(path); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want a refusal containing %q, got %v", name, c.want, err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "corpus.json")
+	write(t, path, `{`+base+`, "clock": {"kind": "node"}}`)
+	if _, err := LoadManifest(path); err != nil {
+		t.Errorf("a node clock: %v", err)
+	}
+}
+
+func TestLoadTaskRefusesAMissingClock(t *testing.T) {
+	f := newFixture(t)
+	for name, clock := range map[string]string{"absent": "", "no zone": "2025-06-02T12:00:00", "a date alone": "2025-06-02"} {
+		task := f.task
+		task.ClockAt = clock
+		raw, _ := json.Marshal(task)
+		path := filepath.Join(t.TempDir(), task.ID, "task.json")
+		write(t, path, string(raw))
+		if _, refusals := LoadTask(path, nil); !strings.Contains(strings.Join(refusals, "\n"), "task calc-add: clock_at is missing or not RFC 3339") {
+			t.Errorf("%s clock_at %q: refusals %q", name, clock, refusals)
+		}
+	}
+	// A clock before the base commit existed is refused by verify, which reads the commit.
+	f.task.ClockAt = "2025-06-01T09:59:59Z"
+	f.save(t, defaultManifest())
+	s, _, out := f.verify(t)
+	if want := "criterion 1: clock_at 2025-06-01T09:59:59Z is before base_sha's commit at 2025-06-01T10:00:00Z"; s.Success() || !strings.Contains(out, want) {
+		t.Fatalf("want a refusal containing %q:\n%s", want, out)
 	}
 }
 

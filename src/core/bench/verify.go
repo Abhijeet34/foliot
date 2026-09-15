@@ -259,6 +259,12 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 		return r, nil
 	}
 	r.Refusals = append(r.Refusals, historyRefusals(ctx, mirror, t, files)...)
+	// A clock before the base commit would run the code on a day before it existed.
+	if based, err := gitOut(ctx, mirror, "show", "-s", "--format=%cI", t.BaseSHA); err != nil {
+		r.Refusals = append(r.Refusals, "criterion 1: "+err.Error())
+	} else if b, err := time.Parse(time.RFC3339, based); err != nil || t.at.Before(b) {
+		r.Refusals = append(r.Refusals, fmt.Sprintf("criterion 1: clock_at %s is before base_sha's commit at %s", t.ClockAt, based))
+	}
 	added, err := addedPaths(ctx, mirror, t)
 	if err != nil {
 		r.Refusals = append(r.Refusals, "criterion 3: "+err.Error())

@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -39,6 +40,10 @@ type Task struct {
 	// History is the archived item the task was drawn from, verbatim, which criteria 2
 	// and 5 are read against.
 	History History `json:"history"`
+	// ClockAt is the RFC 3339 instant the suite, the check and the worker see as now, so a
+	// task whose tests read the calendar stays as green as the day its change landed.
+	ClockAt string `json:"clock_at"`
+	at      time.Time
 }
 
 // Scope is the files the item named, or discover when it named none.
@@ -64,6 +69,11 @@ type Manifest struct {
 	// group is its test count; it is data because each test runner prints the count its own way.
 	VisibleExaminedFrom string `json:"visible_examined_from"`
 	visibleRe           *regexp.Regexp
+	// Clock names the runtime whose clock this runner pins; a corpus on another runtime is
+	// refused until a pin for it exists, rather than run on the wall clock.
+	Clock struct {
+		Kind string `json:"kind"`
+	} `json:"clock"`
 }
 
 // Marker is one pattern that makes a task not self-contained when its history matches.
@@ -123,6 +133,9 @@ func LoadManifest(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("%s: visible_examined_from %q has no group to read the test count from", path, m.VisibleExaminedFrom)
 	}
 	m.visibleRe = re
+	if m.Clock.Kind != "node" {
+		return nil, fmt.Errorf("corpus %s: clock.kind %q is not one this runner can pin (node)", path, m.Clock.Kind)
+	}
 	return &m, nil
 }
 
@@ -154,6 +167,11 @@ func LoadTask(path string, m *Manifest) (*Task, []string) {
 		if strings.TrimSpace(v) == "" {
 			refuse("record: %s is empty", name)
 		}
+	}
+	if at, err := time.Parse(time.RFC3339, t.ClockAt); err != nil {
+		refuse("task %s: clock_at is missing or not RFC 3339", t.ID)
+	} else {
+		t.at = at
 	}
 	if len(t.Scope.Files) == 0 && !t.Scope.Discover {
 		refuse("record: scope names no files and is not discover")

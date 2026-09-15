@@ -633,3 +633,41 @@ func TestSweepDoesNotReuseARecordWithoutTheLandedReading(t *testing.T) {
 		t.Fatalf("a record without the visible readings was reused:\n%s", r.out)
 	}
 }
+
+// A bench.verified written before tasks carried a clock hashed a task.json without clock_at,
+// so its task_sha no longer matches and the task is verified again under its pin.
+func TestSweepDoesNotReuseAVerifiedRecordWithoutAClock(t *testing.T) {
+	r := newRunnerFixture(t)
+	unpinned := r.task
+	unpinned.ClockAt = ""
+	raw, _ := json.MarshalIndent(unpinned, "", " ")
+	var old map[string]any
+	json.Unmarshal(raw, &old)
+	delete(old, "clock_at")
+	raw, _ = json.MarshalIndent(old, "", " ")
+	oldRoot := t.TempDir()
+	write(t, filepath.Join(oldRoot, "bench", "corpus", "v1", "calc-add", "task.json"), string(raw))
+	write(t, filepath.Join(oldRoot, "bench", "checks", "calc-add", "check.sh"), r.check)
+	sum, err := taskSHA(oldRoot, "v1", "calc-add")
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpusSHA, _ := corpusVersion(filepath.Join(r.root, "bench"))
+	l, err := log.Open(r.root, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reading := log.VisibleReading{Exit: 0, Examined: 1, WallMS: 1}
+	v := log.BenchVerified{Corpus: "v1", CorpusSHA: corpusSHA, Task: "calc-add", TaskSHA: sum, BaseExit: 1, LandedExit: 0, Examined: 1,
+		Visible: &log.VisibleReadings{Base: reading, Landed: reading}}
+	if _, err := l.Append(log.Entry{Type: "bench.verified", Actor: "bench", Data: v}); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}); err != nil {
+		t.Fatalf("Run: %v\n%s", err, r.out)
+	}
+	if !strings.Contains(r.out.String(), "0 tasks reused from bench.verified, 1 to verify") {
+		t.Fatalf("a record certified without a clock was reused:\n%s", r.out)
+	}
+}
