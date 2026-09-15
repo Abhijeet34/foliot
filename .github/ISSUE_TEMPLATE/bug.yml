@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Bug report
+description: Something behaves differently from what the documentation says.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A security problem does not belong here.
+        Use the private route in [SECURITY.md](https://github.com/Abhijeet34/foliot/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The release you ran, or the commit SHA if you built from source.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and runtime
+      description: Which operating system, and the version of the runtime the project needs.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: What you ran
+      description: The exact command and its output, pasted rather than described.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened instead
+      description: If the documentation says something different from what you saw, quote the line.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: The smallest input that reproduces it
+      description: Optional, and the most useful thing you can attach.
