@@ -10,7 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Abhijeet34/foliot/internal/testenv"
 )
@@ -66,7 +68,7 @@ func newFixture(t *testing.T) *fixture {
 	git(t, dir, "init", "--quiet", "--initial-branch=main", f.src)
 	write(t, filepath.Join(f.src, "lib.sh"), "add() { echo $(($1 - $2)); }\n")
 	// The visible suite reads the git index, as a real repository's suite may.
-	write(t, filepath.Join(f.src, "test.sh"), ". ./lib.sh\n[ \"$(add 2 0)\" = 2 ]\ngit ls-files --error-unmatch lib.sh >/dev/null\n")
+	write(t, filepath.Join(f.src, "test.sh"), ". ./lib.sh\n[ \"$(add 2 0)\" = 2 ]\ngit ls-files --error-unmatch lib.sh >/dev/null\necho '# tests 1'\n")
 	git(t, f.src, "add", ".")
 	git(t, f.src, "commit", "--quiet", "-m", "start")
 	f.base = git(t, f.src, "rev-parse", "HEAD")
@@ -106,8 +108,9 @@ func (f *fixture) save(t *testing.T, manifest Manifest) {
 
 func defaultManifest() Manifest {
 	return Manifest{
-		Classes:  map[string]int{"defect": 1, "feature": 0, "refactor": 0},
-		Refusals: []Marker{{What: "a held decision", Pattern: `(?i)held for a decision`}},
+		Classes:             map[string]int{"defect": 1, "feature": 0, "refactor": 0},
+		Refusals:            []Marker{{What: "a held decision", Pattern: `(?i)held for a decision`}},
+		VisibleExaminedFrom: `(?m)^(?:ℹ|#) tests ([0-9]+)$`,
 	}
 }
 
@@ -131,10 +134,11 @@ func TestVerifyCertifiesARedThenGreenTask(t *testing.T) {
 	if !s.Success() || s.Examined != 1 || s.Classes["defect"] != 1 {
 		t.Fatalf("want success over 1 defect, got %+v\n%s", s, out)
 	}
-	if r.Base == 0 || r.Landed != 0 || r.Additions == 0 || r.Visible != 0 || r.Examined != 1 {
-		t.Fatalf("want base red, landed green, additions red, visible green, examined 1; got %+v", r)
+	if r.Base == 0 || r.Landed != 0 || r.Additions == 0 || r.Examined != 1 ||
+		r.VisibleBase.Exit != 0 || r.VisibleBase.Examined != 1 || r.VisibleLanded.Exit != 0 || r.VisibleLanded.Examined != 1 {
+		t.Fatalf("want base red, landed green, additions red, visible green over 1 test at base and landed, examined 1; got %+v", r)
 	}
-	for _, want := range []string{"task=calc-add class=defect base=1 landed=0 additions=1 visible_at_base=0 examined=1 verdict=ok", "examined=1 ok=1 refused=0 defect=1 feature=0 refactor=0 scope=full corpus_sha="} {
+	for _, want := range []string{"task=calc-add class=defect base=1 landed=0 additions=1 visible_at_base=0/1 visible_at_landed=0/1 examined=1 verdict=ok", "examined=1 ok=1 refused=0 defect=1 feature=0 refactor=0 scope=full corpus_sha="} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -171,7 +175,7 @@ func TestVerifyRefuses(t *testing.T) {
 			f.check = "sh test.sh\n" + goodCheck
 		}},
 		{"a check that is a repository file", "byte-identical to a file in the repository", func(f *fixture, _ *Manifest) {
-			f.check = ". ./lib.sh\n[ \"$(add 2 0)\" = 2 ]\ngit ls-files --error-unmatch lib.sh >/dev/null\n"
+			f.check = ". ./lib.sh\n[ \"$(add 2 0)\" = 2 ]\ngit ls-files --error-unmatch lib.sh >/dev/null\necho '# tests 1'\n"
 		}},
 		{"a check that examines nothing", "printed no examined", func(f *fixture, _ *Manifest) {
 			f.check = strings.TrimSuffix(goodCheck, "echo examined=1\n")
@@ -252,7 +256,7 @@ func TestVerifyRefusesAnUncommittedCorpus(t *testing.T) {
 
 func TestVerifyRefusesZeroTasks(t *testing.T) {
 	f := newFixture(t)
-	f.save(t, Manifest{Classes: map[string]int{}, Refusals: defaultManifest().Refusals})
+	f.save(t, Manifest{Classes: map[string]int{}, Refusals: defaultManifest().Refusals, VisibleExaminedFrom: defaultManifest().VisibleExaminedFrom})
 	if err := os.RemoveAll(filepath.Join(f.root, "bench", "corpus", "v1", "calc-add")); err != nil {
 		t.Fatal(err)
 	}
@@ -269,9 +273,208 @@ func TestVerifyRefusesZeroTasks(t *testing.T) {
 
 func TestLoadManifestRefusesNoHistoryMarkers(t *testing.T) {
 	testenv.Isolate(t)
-	path := filepath.Join(t.TempDir(), "corpus.json")
-	write(t, path, `{"classes": {"defect": 1}, "history_refusals": []}`)
-	if _, err := LoadManifest(path); err == nil || !strings.Contains(err.Error(), "examine nothing") {
-		t.Fatalf("want an empty marker list refused, got %v", err)
+	markers := `"history_refusals": [{"what": "a hold", "pattern": "hold"}]`
+	for name, c := range map[string]struct{ manifest, want string }{
+		"no history markers":                       {`{"classes": {"defect": 1}, "history_refusals": [], "visible_examined_from": "tests ([0-9]+)"}`, "examine nothing"},
+		"no visible count expression":              {`{"classes": {"defect": 1}, ` + markers + `}`, "visible_examined_from"},
+		"a count expression that does not compile": {`{"classes": {"defect": 1}, ` + markers + `, "visible_examined_from": "tests ([0-9]+"}`, "does not compile"},
+		"a count expression with no group":         {`{"classes": {"defect": 1}, ` + markers + `, "visible_examined_from": "tests [0-9]+"}`, "no group"},
+	} {
+		path := filepath.Join(t.TempDir(), "corpus.json")
+		write(t, path, c.manifest)
+		if _, err := LoadManifest(path); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want a refusal containing %q, got %v", name, c.want, err)
+		}
+	}
+}
+
+// addMulTask commits a third change, mul(), on top of the fixture's landed commit and adds
+// a feature task drawn from it: its base_sha is the first task's landed_sha. It returns the
+// manifest counting both tasks; call save after it.
+func (f *fixture) addMulTask(t *testing.T) (Task, string, Manifest) {
+	t.Helper()
+	write(t, filepath.Join(f.src, "lib.sh"), "add() { echo $(($1 + $2)); }\nmul() { echo $(($1 * $2)); }\n")
+	git(t, f.src, "add", ".")
+	git(t, f.src, "commit", "--quiet", "-m", "feat: mul (#8)")
+	pr := "https://github.com/example/calc/pull/8"
+	request := "calc needs mul, which prints the product of its two arguments."
+	sum := sha256.Sum256([]byte(request))
+	task := f.task
+	task.ID, task.Class, task.Request, task.RequestSHA256 = "calc-mul", "feature", request, hex.EncodeToString(sum[:])
+	task.BaseSHA, task.LandedSHA, task.PullRequest = f.landed, git(t, f.src, "rev-parse", "HEAD"), pr
+	task.History = History{Source: "archive.md", Item: "calc-mul", Text: "- [x] calc-mul - add mul " + pr}
+	m := defaultManifest()
+	m.Classes["feature"] = 1
+	return task, ". ./lib.sh\n[ \"$(mul 2 3)\" = 6 ] || exit 1\necho examined=1\n", m
+}
+
+// saveTask writes one more task and its check into the corpus and commits it.
+func (f *fixture) saveTask(t *testing.T, task Task, check string) {
+	t.Helper()
+	b := filepath.Join(f.root, "bench")
+	raw, _ := json.MarshalIndent(task, "", " ")
+	write(t, filepath.Join(b, "corpus", "v1", task.ID, "task.json"), string(raw))
+	write(t, filepath.Join(b, "checks", task.ID, "check.sh"), check)
+	git(t, b, "add", ".")
+	git(t, b, "commit", "--quiet", "-m", "corpus: "+task.ID)
+}
+
+func verifyAll(t *testing.T, root string, jobs int) (Summary, string) {
+	t.Helper()
+	var out bytes.Buffer
+	s, err := Verify(context.Background(), Options{Root: root, Corpus: "v1", Jobs: jobs, Out: &out})
+	if err != nil {
+		t.Fatalf("Verify: %v\n%s", err, out.String())
+	}
+	return s, out.String()
+}
+
+// runs counts the lines a visible check appended to a file named for the commit it ran at.
+func runs(t *testing.T, dir, sha string) int {
+	t.Helper()
+	b, _ := os.ReadFile(filepath.Join(dir, sha))
+	return bytes.Count(b, []byte("run\n"))
+}
+
+// counting prefixes a visible check with a line that records one run at the checkout's commit.
+func counting(dir, check string) string {
+	return `echo run >> "` + dir + `/$(git rev-parse HEAD)"; ` + check
+}
+
+func TestVerifyRunsVisibleSuitesOneAtATime(t *testing.T) {
+	f := newFixture(t)
+	marker := filepath.Join(t.TempDir(), "running")
+	f.task.VisibleCheck = `test ! -e "` + marker + `" || { echo "another visible suite is running"; exit 1; }; touch "` + marker + `"; sleep 2; rm "` + marker + `"; sh test.sh`
+	mul, check, m := f.addMulTask(t)
+	mul.VisibleCheck = f.task.VisibleCheck
+	f.save(t, m)
+	f.saveTask(t, mul, check)
+	s, out := verifyAll(t, f.root, 2)
+	if !s.Success() || s.OK != 2 {
+		t.Fatalf("want both tasks certified with two jobs, got %+v\n%s", s, out)
+	}
+}
+
+func TestVerifyRefusesAVisibleSuiteGreenOverZeroTests(t *testing.T) {
+	f := newFixture(t)
+	f.task.VisibleCheck = "echo '# tests 0'"
+	f.save(t, defaultManifest())
+	s, r, out := f.verify(t)
+	if s.Success() || !strings.Contains(out, "exits 0 at base_sha over 0 tests (K7)") {
+		t.Fatalf("want a green over zero tests refused:\n%s", out)
+	}
+	if r.VisibleBase.Exit != 0 || r.VisibleBase.Examined != 0 {
+		t.Fatalf("want the reading kept, got %+v", r.VisibleBase)
+	}
+}
+
+func TestVerifyRefusesAVisibleSuiteRedAtLanded(t *testing.T) {
+	f := newFixture(t)
+	f.task.VisibleCheck = `. ./lib.sh; [ "$(add 2 1)" = 1 ] || { echo "add 2 1 is $(add 2 1)"; exit 1; }; echo '# tests 1'`
+	f.save(t, defaultManifest())
+	s, r, out := f.verify(t)
+	want := "criterion 1: the visible check `" + f.task.VisibleCheck + "` is red at landed_sha in two runs alone (exit 1, 1; logs "
+	if s.Success() || !strings.Contains(out, want) || strings.Contains(out, "at base_sha") {
+		t.Fatalf("want a refusal at landed_sha only, containing %q:\n%s", want, out)
+	}
+	if r.VisibleBase.Exit != 0 || r.VisibleLanded.Exit != 1 || r.VisibleLanded.Rerun == nil || r.VisibleLanded.Rerun.Exit != 1 {
+		t.Fatalf("want green at base and both landed runs kept red, got base %+v landed %+v", r.VisibleBase, r.VisibleLanded)
+	}
+	for _, name := range []string{"visible-landed.log", "visible-landed-rerun.log", "visible-base.log"} {
+		if _, err := os.Stat(filepath.Join(f.root, "bench", "verify", "calc-add", name)); err != nil {
+			t.Errorf("log %s: %v", name, err)
+		}
+	}
+}
+
+func TestVerifyNamesAFlakyVisibleSuite(t *testing.T) {
+	f := newFixture(t)
+	counter := t.TempDir()
+	// Red on the first run at the commit that holds notes/added.txt, green on every other.
+	f.task.VisibleCheck = counting(counter, `if [ -e notes/added.txt ] && [ "$(grep -c run "`+counter+`/$(git rev-parse HEAD)")" = 1 ]; then exit 1; fi; sh test.sh`)
+	f.save(t, defaultManifest())
+	s, r, out := f.verify(t)
+	want := "is not deterministic at landed_sha: red then green in two runs alone (logs "
+	if s.Success() || !strings.Contains(out, want) {
+		t.Fatalf("want the flake named, containing %q:\n%s", want, out)
+	}
+	if n := runs(t, counter, f.landed); n != 2 {
+		t.Fatalf("the suite ran %d times at landed_sha, want 2", n)
+	}
+	if n := runs(t, counter, f.base); n != 1 {
+		t.Fatalf("the suite ran %d times at base_sha, want 1", n)
+	}
+	if r.VisibleLanded.Exit != 1 || r.VisibleLanded.Rerun == nil || r.VisibleLanded.Rerun.Exit != 0 {
+		t.Fatalf("want both landed readings kept, got %+v", r.VisibleLanded)
+	}
+}
+
+func TestVerifyDedupesVisibleRoundsBySha(t *testing.T) {
+	f := newFixture(t)
+	counter := t.TempDir()
+	f.task.VisibleCheck = counting(counter, "sh test.sh")
+	mul, check, m := f.addMulTask(t)
+	mul.VisibleCheck = f.task.VisibleCheck
+	f.save(t, m)
+	f.saveTask(t, mul, check)
+	s, out := verifyAll(t, f.root, 2)
+	if !s.Success() {
+		t.Fatalf("want both tasks certified:\n%s", out)
+	}
+	entries, _ := os.ReadDir(counter)
+	total := 0
+	for _, e := range entries {
+		total += runs(t, counter, e.Name())
+	}
+	if total != 3 || runs(t, counter, f.landed) != 1 {
+		t.Fatalf("want 3 visible runs for 3 distinct shas, one at the shared sha; got %d (%d at the shared sha)", total, runs(t, counter, f.landed))
+	}
+	for _, id := range []string{"calc-add", "calc-mul"} {
+		for _, name := range []string{"visible-base.log", "visible-landed.log"} {
+			if _, err := os.Stat(filepath.Join(f.root, "bench", "verify", id, name)); err != nil {
+				t.Errorf("%s: %v", id, err)
+			}
+		}
+	}
+}
+
+func TestVerifyRefusesAHangingVisibleSuiteWithoutRerun(t *testing.T) {
+	f := newFixture(t)
+	counter := t.TempDir()
+	f.task.VisibleCheck = counting(counter, "sleep 10")
+	f.save(t, defaultManifest())
+	old := visibleTimeout
+	visibleTimeout = 2 * time.Second
+	t.Cleanup(func() { visibleTimeout = old })
+	s, r, out := f.verify(t)
+	if s.Success() || !strings.Contains(out, "at base_sha was killed after 2s (log ") {
+		t.Fatalf("want the hang refused:\n%s", out)
+	}
+	if r.VisibleBase.Exit != 124 || r.VisibleBase.Rerun != nil || runs(t, counter, f.base) != 1 {
+		t.Fatalf("want one run killed with 124 and no re-run, got %+v after %d runs", r.VisibleBase, runs(t, counter, f.base))
+	}
+}
+
+func TestCheckoutDeadlineCountsTimeTheMachineSlept(t *testing.T) {
+	testenv.Isolate(t)
+	// The first wall reading sets the deadline; every later one is an hour on, as after a
+	// machine sleep that Go's monotonic timers do not see on darwin.
+	start := time.Now()
+	var readings atomic.Int32
+	oldNow, oldPoll := wallNow, wallPoll
+	wallNow = func() time.Time {
+		if readings.Add(1) == 1 {
+			return start
+		}
+		return start.Add(time.Hour)
+	}
+	wallPoll = 50 * time.Millisecond
+	t.Cleanup(func() { wallNow, wallPoll = oldNow, oldPoll })
+	dir := t.TempDir()
+	co := &checkout{dir: dir}
+	began := time.Now()
+	rc := co.sh(context.Background(), "sleep 10", nil, 30*time.Minute, filepath.Join(dir, "sleep.log"))
+	if took := time.Since(began); rc != 124 || took > 5*time.Second {
+		t.Fatalf("a 30-minute deadline an hour of wall time ago: exit %d after %s, want 124 at once", rc, took)
 	}
 }

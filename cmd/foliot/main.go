@@ -47,9 +47,13 @@ const verifyUsage = `usage: foliot bench corpus verify --corpus <name> [--task <
 
 Checks every task of <root>/bench/corpus/<name> against the six corpus criteria:
 the hidden check <root>/bench/checks/<task>/check.sh must exit non-zero in a fresh
-checkout at base_sha and at base_sha plus only the files the landed change adds, exit 0
-at landed_sha with examined=<n> as its last line, and the visible check must pass at
-base_sha. Prints one line per task, then examined=<n> with per-class counts.
+checkout at base_sha and at base_sha plus only the files the landed change adds, and
+exit 0 at landed_sha with examined=<n> as its last line. Then the visible check must
+pass at base_sha and at landed_sha over a non-zero test count, read from its output by
+the corpus's visible_examined_from; these suites run one at a time, after every hidden
+check, once per distinct commit, and a red one runs once more only to name it red or
+flaky. --jobs is how many tasks' hidden checks run at once (default 2).
+Prints one line per task, then examined=<n> with per-class counts.
 <root> is $FOLIOT_HOME, an absolute path.
 
 Exit: 0 every examined task passed over a non-zero count; 1 a refusal; 2 usage.

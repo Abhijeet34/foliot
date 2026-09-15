@@ -29,8 +29,8 @@ var catalogue = map[string]entry{
 	"bench.verdict": {actor: "bench", required: []string{
 		"corpus", "task", "arm", "repeat", "pass", "false_claim", "columns", "check_exit", "examined",
 	}, durable: true},
-	// bench.verified is one task's corpus certification at a corpus sha; a sweep reuses it
-	// while the corpus HEAD is that sha and clean, instead of re-proving the task.
+	// bench.verified is one task's corpus certification; a sweep reuses it while the corpus
+	// is clean and the task's record and hidden check still hash to its task_sha.
 	"bench.verified": {actor: "bench", required: []string{
 		"corpus", "corpus_sha", "task", "base_exit", "landed_exit", "examined",
 	}, durable: true},

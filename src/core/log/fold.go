@@ -94,24 +94,42 @@ type BenchEstimate struct {
 	CorpusTasks  int                `json:"corpus_tasks"`
 }
 
-// BenchVerified is bench.verified's data.
+// BenchVerified is bench.verified's data. TaskSHA is sha256 over the task's record and its
+// hidden check; it and Visible are optional so records written before them still fold.
 type BenchVerified struct {
-	Corpus     string `json:"corpus"`
-	CorpusSHA  string `json:"corpus_sha"`
-	Task       string `json:"task"`
-	BaseExit   int    `json:"base_exit"`
-	LandedExit int    `json:"landed_exit"`
-	Examined   int    `json:"examined"`
+	Corpus     string           `json:"corpus"`
+	CorpusSHA  string           `json:"corpus_sha"`
+	Task       string           `json:"task"`
+	TaskSHA    string           `json:"task_sha"`
+	BaseExit   int              `json:"base_exit"`
+	LandedExit int              `json:"landed_exit"`
+	Examined   int              `json:"examined"`
+	Visible    *VisibleReadings `json:"visible,omitempty"`
 }
 
-// Verified folds bench.verified by (corpus, corpus_sha, task); a later record replaces an
+// VisibleReadings are the visible suite's runs at base_sha and at landed_sha.
+type VisibleReadings struct {
+	Base   VisibleReading `json:"base"`
+	Landed VisibleReading `json:"landed"`
+}
+
+// VisibleReading is one visible suite run; the timings and load are columns, never a verdict.
+type VisibleReading struct {
+	Exit        int      `json:"exit"`
+	Examined    int      `json:"examined"`
+	WallMS      int64    `json:"wall_ms"`
+	CPUMS       int64    `json:"cpu_ms"`
+	LoadAtStart *float64 `json:"load_at_start"`
+}
+
+// Verified folds bench.verified by (corpus, task, task_sha); a later record replaces an
 // earlier one.
 func Verified(events []Event) map[[3]string]BenchVerified {
 	out := map[[3]string]BenchVerified{}
 	for _, e := range usable(events) {
 		var v BenchVerified
 		if e.Type == "bench.verified" && json.Unmarshal(e.Data, &v) == nil {
-			out[[3]string{v.Corpus, v.CorpusSHA, v.Task}] = v
+			out[[3]string{v.Corpus, v.Task, v.TaskSHA}] = v
 		}
 	}
 	return out
