@@ -590,6 +590,10 @@ func TestVerifyRecordsVisibleColumns(t *testing.T) {
 		t.Fatalf("bench.verified carries no visible readings: %+v", v)
 	}
 	t.Logf("visible readings: base %+v landed %+v", v.Visible.Base, v.Visible.Landed)
+	at, _ := time.Parse(time.RFC3339, fixtureClock)
+	if d := time.Now().Add(time.Duration(v.ClockOffsetMS) * time.Millisecond).Sub(at); v.ClockAt != fixtureClock || d < -clockSlack || d > clockSlack {
+		t.Errorf("bench.verified clock_at=%q clock_offset_ms=%d, %s from the pin", v.ClockAt, v.ClockOffsetMS, d)
+	}
 	for phase, rd := range map[string]log.VisibleReading{"base": v.Visible.Base, "landed": v.Visible.Landed} {
 		if rd.Exit != 0 || rd.Examined != 1 || rd.WallMS <= 0 || rd.CPUMS < 0 {
 			t.Errorf("visible.%s: %+v", phase, rd)
@@ -674,6 +678,26 @@ func TestSweepDoesNotReuseAVerifiedRecordWithoutAClock(t *testing.T) {
 	if !strings.Contains(r.out.String(), "0 tasks reused from bench.verified, 1 to verify") {
 		t.Fatalf("a record certified without a clock was reused:\n%s", r.out)
 	}
+
+	// A record whose task_sha matches but that carries no clock_at is not reused either.
+	if sum, err = taskSHA(r.root, "v1", "calc-add"); err != nil {
+		t.Fatal(err)
+	}
+	if l, err = log.Open(r.root, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	v.TaskSHA = sum
+	if _, err := l.Append(log.Entry{Type: "bench.verified", Actor: "bench", Data: v}); err != nil {
+		t.Fatal(err)
+	}
+	l.Close()
+	r.out.Reset()
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}); err != nil {
+		t.Fatalf("second Run: %v\n%s", err, r.out)
+	}
+	if !strings.Contains(r.out.String(), "0 tasks reused from bench.verified, 1 to verify") {
+		t.Fatalf("a record with the task's sha and no clock_at was reused:\n%s", r.out)
+	}
 }
 
 func TestIsolationProbeReadsThePinnedClock(t *testing.T) {
@@ -723,6 +747,11 @@ func TestRunPinsTheWorkerAndTheCheck(t *testing.T) {
 	at, _ := time.Parse(time.RFC3339, fixtureClock)
 	if d := time.UnixMilli(ms).Sub(at); d < -clockSlack || d > clockSlack {
 		t.Fatalf("the worker's node read %s, %s from the pin %s", time.UnixMilli(ms).UTC(), d, at)
+	}
+	// The record carries the offset the worker was launched under, and it moves the wall clock to the pin.
+	run := runs[0].Run
+	if d := time.Now().Add(time.Duration(run.ClockOffsetMS) * time.Millisecond).Sub(at); run.ClockAt != fixtureClock || d < -clockSlack || d > clockSlack {
+		t.Errorf("bench.run clock_at=%q clock_offset_ms=%d, %s from the pin", run.ClockAt, run.ClockOffsetMS, d)
 	}
 	prompt, _ := os.ReadFile(filepath.Join(r.root, runs[0].Run.Run, "prompt.md"))
 	if !strings.Contains(string(prompt), "Clock: this workspace's node clock is pinned to "+fixtureClock+"; leave NODE_OPTIONS as it is.") {

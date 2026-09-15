@@ -91,6 +91,8 @@ type Result struct {
 	Examined                   int
 	Refusals                   []string
 	TaskSHA                    string // taskSHA of what was verified
+	ClockAt                    string
+	ClockOffsetMS              int64 // the landed hidden check's clock offset
 }
 
 // VisibleRun is one run of a task's visible suite, and the classifying re-run a red gets.
@@ -243,7 +245,7 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 	if t == nil {
 		return r, nil
 	}
-	r.Class = t.Class
+	r.Class, r.ClockAt = t.Class, t.ClockAt
 	for _, f := range files {
 		b, _ := os.ReadFile(f)
 		for _, sha := range []string{t.BaseSHA, t.LandedSHA} {
@@ -318,6 +320,9 @@ func verifyTask(ctx context.Context, bench, corpusDir string, m *Manifest, id st
 			_ = os.WriteFile(log, []byte(err.Error()+"\n"), 0o644)
 			refuse("criterion 3: %v, so the %s check did not run (log %s)", err, phase, log)
 			return notRun
+		}
+		if phase == "landed" {
+			r.ClockOffsetMS = clockOffsetMS(clock)
 		}
 		return co.sh(ctx, "sh .bench-check/check.sh", env, checkTimeout, log)
 	}
@@ -877,8 +882,8 @@ func printResult(w io.Writer, r Result, logs string) {
 	if r.AdditionsSameAsBase {
 		additions = "same-as-base"
 	}
-	fmt.Fprintf(w, "task=%s class=%s base=%s landed=%s additions=%s visible_at_base=%s visible_at_landed=%s examined=%d verdict=%s logs=%s\n",
-		r.ID, r.Class, code(r.Base), code(r.Landed), additions, visibleCode(r.VisibleBase), visibleCode(r.VisibleLanded), r.Examined, verdict, logs)
+	fmt.Fprintf(w, "task=%s class=%s clock_at=%s base=%s landed=%s additions=%s visible_at_base=%s visible_at_landed=%s examined=%d verdict=%s logs=%s\n",
+		r.ID, r.Class, r.ClockAt, code(r.Base), code(r.Landed), additions, visibleCode(r.VisibleBase), visibleCode(r.VisibleLanded), r.Examined, verdict, logs)
 	for _, why := range r.Refusals {
 		fmt.Fprintf(w, "  refused: %s\n", why)
 	}

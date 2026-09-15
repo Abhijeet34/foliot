@@ -170,7 +170,7 @@ func (s *session) selectTasks(ids []string) ([]*Task, error) {
 
 // verify certifies the tasks a sweep will use (a5 section 2.16): the base and landed exit
 // codes on bench.run come from here. A task is reused from a bench.verified record that
-// carries both visible readings and the task's current content sha, in a clean corpus,
+// carries both visible readings, the task's current content sha and its clock, in a clean corpus,
 // since one task's verify is minutes of suite runs and nothing it certified has changed.
 func (s *session) verify(ctx context.Context, tasks []*Task) error {
 	sha, dirty := corpusVersion(filepath.Join(s.Root, "bench"))
@@ -185,7 +185,7 @@ func (s *session) verify(ctx context.Context, tasks []*Task) error {
 		if err != nil {
 			return err
 		}
-		if v, ok := done[[3]string{s.Corpus, t.ID, content}]; ok && !dirty && v.Visible != nil {
+		if v, ok := done[[3]string{s.Corpus, t.ID, content}]; ok && !dirty && v.Visible != nil && v.ClockAt == t.ClockAt {
 			s.verified[t.ID] = verifiedExits{v.BaseExit, v.LandedExit}
 			continue
 		}
@@ -209,7 +209,7 @@ func (s *session) verify(ctx context.Context, tasks []*Task) error {
 	for _, r := range sum.Results {
 		s.verified[r.ID] = verifiedExits{r.Base, r.Landed}
 		v := log.BenchVerified{Corpus: s.Corpus, CorpusSHA: sha, Task: r.ID, TaskSHA: r.TaskSHA, BaseExit: r.Base, LandedExit: r.Landed, Examined: r.Examined,
-			Visible: &log.VisibleReadings{Base: reading(r.VisibleBase), Landed: reading(r.VisibleLanded)}}
+			Visible: &log.VisibleReadings{Base: reading(r.VisibleBase), Landed: reading(r.VisibleLanded)}, ClockAt: r.ClockAt, ClockOffsetMS: r.ClockOffsetMS}
 		if _, err := s.log.Append(log.Entry{Type: "bench.verified", Actor: "bench", Data: v}); err != nil {
 			return err
 		}
@@ -670,10 +670,11 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 		Billing: h.Billing(), BaseSHA: task.BaseSHA, BaseExit: v.base, LandedExit: v.landed, Benchmark: true,
 		CapUSD: r.cap, IsolationProven: true, IsolationProbe: probeSeq,
 		HistoryFree: hist.Free(), LandedObjectExit: hist.LandedObjectExit,
-		ModelCutoff: r.arm.Cutoff, PublicSince: publicSince, Run: rel(s.Root, w.record),
+		ModelCutoff: r.arm.Cutoff, PublicSince: publicSince, Run: rel(s.Root, w.record), ClockAt: task.ClockAt,
 	}
 	run.Repository, run.RepositoryPublic, run.RepositoryLanguage = task.Repository, &facts.public, facts.language
 	if !hist.Free() {
+		run.ClockOffsetMS = task.at.Sub(wallNow()).Milliseconds() // no worker launches to be pinned
 		if _, err := s.log.Append(log.Entry{Type: "bench.run", Actor: "bench", Data: run}); err != nil {
 			return nil, err
 		}
@@ -689,6 +690,7 @@ func (s *session) runOne(ctx context.Context, r plannedRun, probeSeq int64) (*fl
 	if err != nil {
 		return nil, err
 	}
+	run.ClockOffsetMS = clockOffsetMS(clock)
 	runSeq, err := s.log.Append(log.Entry{Type: "bench.run", Actor: "bench", Data: run})
 	if err != nil {
 		return nil, err

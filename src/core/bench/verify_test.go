@@ -177,7 +177,7 @@ func TestVerifyCertifiesARedThenGreenTask(t *testing.T) {
 		r.VisibleBase.Exit != 0 || r.VisibleBase.Examined != 1 || r.VisibleLanded.Exit != 0 || r.VisibleLanded.Examined != 1 {
 		t.Fatalf("want base red, landed green, additions red, visible green over 1 test at base and landed, examined 1; got %+v", r)
 	}
-	for _, want := range []string{"task=calc-add class=defect base=1 landed=0 additions=1 visible_at_base=0/1 visible_at_landed=0/1 examined=1 verdict=ok", "examined=1 ok=1 refused=0 defect=1 feature=0 refactor=0 scope=full corpus_sha="} {
+	for _, want := range []string{"task=calc-add class=defect clock_at=2025-06-02T12:00:00Z base=1 landed=0 additions=1 visible_at_base=0/1 visible_at_landed=0/1 examined=1 verdict=ok", "examined=1 ok=1 refused=0 defect=1 feature=0 refactor=0 scope=full corpus_sha="} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
