@@ -34,6 +34,7 @@ It also runs the check on the base tree plus only the files the landed commit ad
 The second runs each task's visible suite exactly as recorded, in a fresh clone at `base_sha` and at `landed_sha`, one suite at a time and only after every hidden check has finished, because a benchmark arm's worker runs its suite alone.
 A commit two tasks share is run once, and its test count is read from the output with the corpus's `visible_examined_from` expression, so a green over zero tests is refused.
 A red suite runs once more in a fresh clone, only to name it red in both runs or flaky; either way the task is refused, and a suite killed at its 30-minute deadline is refused without a second run.
+Every hidden check and visible suite runs with node's `Date` and file timestamps moved together to the task's `clock_at`, each run starting at that instant, and a run whose `node -p Date.now()` does not read within 120 seconds of it is refused rather than run on the wall clock.
 It ends with `examined=<n>` and a count per class, and exits 0 only when every task passed, the class counts match `corpus.json`, and the corpus is committed.
 
 A green over zero tasks is not a pass.

@@ -28,10 +28,40 @@ type fixture struct {
 	check        string
 }
 
+// The fixture's commits are dated and its tasks pinned a day later, on a day no test runs on,
+// so a suite that reads the wall clock is told apart from one that reads the pin.
+const (
+	fixtureCommitted = "2025-06-01T10:00:00Z"
+	fixtureClock     = "2025-06-02T12:00:00Z"
+)
+
 const goodCheck = `. ./lib.sh
 [ "$(add 2 3)" = 5 ] || { echo "add 2 3 is $(add 2 3)"; exit 1; }
 echo examined=1
 `
+
+// pinnedCheck exits 1 unless node's day is the fixture's pinned day and a file node's kernel
+// just wrote reads within 5 s of node's Date.now(), which a Date-only pin fails by days.
+const pinnedCheck = `node -e '
+const fs = require("fs")
+const day = new Date().toISOString().slice(0, 10)
+if (day !== process.argv[1]) { console.log("node sees " + day + ", want " + process.argv[1]); process.exit(1) }
+fs.writeFileSync("clock-probe", "x")
+const drift = Math.abs(fs.statSync("clock-probe").mtimeMs - Date.now())
+if (drift > 5000) { console.log("a fresh mtime is " + drift + " ms from Date.now()"); process.exit(1) }
+' 2025-06-02 || exit 1
+`
+
+// hostNode is the directory of the node the host resolves, read at init, before testenv moves
+// HOME: a version manager's shim resolves node through HOME and would install it afresh under
+// a test's own.
+var hostNode = func() string {
+	out, err := exec.Command("node", "-p", "process.execPath").Output()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(strings.TrimSpace(string(out)))
+}()
 
 func git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
@@ -57,9 +87,14 @@ func write(t *testing.T, path, content string) {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	testenv.Isolate(t)
+	if hostNode == "" {
+		t.Fatal("node is not on PATH, and every pinned run's clock control needs it")
+	}
+	t.Setenv("PATH", hostNode+string(filepath.ListSeparator)+os.Getenv("PATH"))
 	for k, v := range map[string]string{
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
 		"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@invalid", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@invalid",
+		"GIT_AUTHOR_DATE": fixtureCommitted, "GIT_COMMITTER_DATE": fixtureCommitted,
 	} {
 		t.Setenv(k, v)
 	}
@@ -86,6 +121,7 @@ func newFixture(t *testing.T) *fixture {
 		Repository: f.src, BaseSHA: f.base, LandedSHA: f.landed, PullRequest: pr,
 		VisibleCheck: "sh test.sh", Scope: Scope{Files: []string{"lib.sh"}},
 		History: History{Source: "archive.md", Item: "calc-add", Text: "- [x] calc-add - add subtracts " + pr},
+		ClockAt: fixtureClock,
 	}
 	f.check = goodCheck
 	return f
@@ -111,6 +147,9 @@ func defaultManifest() Manifest {
 		Classes:             map[string]int{"defect": 1, "feature": 0, "refactor": 0},
 		Refusals:            []Marker{{What: "a held decision", Pattern: `(?i)held for a decision`}},
 		VisibleExaminedFrom: `(?m)^(?:ℹ|#) tests ([0-9]+)$`,
+		Clock: struct {
+			Kind string `json:"kind"`
+		}{"node"},
 	}
 }
 
@@ -138,7 +177,7 @@ func TestVerifyCertifiesARedThenGreenTask(t *testing.T) {
 		r.VisibleBase.Exit != 0 || r.VisibleBase.Examined != 1 || r.VisibleLanded.Exit != 0 || r.VisibleLanded.Examined != 1 {
 		t.Fatalf("want base red, landed green, additions red, visible green over 1 test at base and landed, examined 1; got %+v", r)
 	}
-	for _, want := range []string{"task=calc-add class=defect base=1 landed=0 additions=1 visible_at_base=0/1 visible_at_landed=0/1 examined=1 verdict=ok", "examined=1 ok=1 refused=0 defect=1 feature=0 refactor=0 scope=full corpus_sha="} {
+	for _, want := range []string{"task=calc-add class=defect clock_at=2025-06-02T12:00:00Z base=1 landed=0 additions=1 visible_at_base=0/1 visible_at_landed=0/1 examined=1 verdict=ok", "examined=1 ok=1 refused=0 defect=1 feature=0 refactor=0 scope=full corpus_sha="} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -256,7 +295,9 @@ func TestVerifyRefusesAnUncommittedCorpus(t *testing.T) {
 
 func TestVerifyRefusesZeroTasks(t *testing.T) {
 	f := newFixture(t)
-	f.save(t, Manifest{Classes: map[string]int{}, Refusals: defaultManifest().Refusals, VisibleExaminedFrom: defaultManifest().VisibleExaminedFrom})
+	m := defaultManifest()
+	m.Classes = map[string]int{}
+	f.save(t, m)
 	if err := os.RemoveAll(filepath.Join(f.root, "bench", "corpus", "v1", "calc-add")); err != nil {
 		t.Fatal(err)
 	}
@@ -285,6 +326,48 @@ func TestLoadManifestRefusesNoHistoryMarkers(t *testing.T) {
 		if _, err := LoadManifest(path); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: want a refusal containing %q, got %v", name, c.want, err)
 		}
+	}
+}
+
+func TestLoadManifestRefusesAnUnknownClockKind(t *testing.T) {
+	testenv.Isolate(t)
+	base := `"classes": {"defect": 1}, "history_refusals": [{"what": "a hold", "pattern": "hold"}], "visible_examined_from": "tests ([0-9]+)"`
+	for name, c := range map[string]struct{ manifest, want string }{
+		"no clock":             {`{` + base + `}`, `clock.kind "" is not one this runner can pin (node)`},
+		"a python clock":       {`{` + base + `, "clock": {"kind": "python"}}`, `clock.kind "python" is not one this runner can pin (node)`},
+		"a clock with no kind": {`{` + base + `, "clock": {}}`, `clock.kind ""`},
+	} {
+		path := filepath.Join(t.TempDir(), "corpus.json")
+		write(t, path, c.manifest)
+		if _, err := LoadManifest(path); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want a refusal containing %q, got %v", name, c.want, err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "corpus.json")
+	write(t, path, `{`+base+`, "clock": {"kind": "node"}}`)
+	if _, err := LoadManifest(path); err != nil {
+		t.Errorf("a node clock: %v", err)
+	}
+}
+
+func TestLoadTaskRefusesAMissingClock(t *testing.T) {
+	f := newFixture(t)
+	for name, clock := range map[string]string{"absent": "", "no zone": "2025-06-02T12:00:00", "a date alone": "2025-06-02"} {
+		task := f.task
+		task.ClockAt = clock
+		raw, _ := json.Marshal(task)
+		path := filepath.Join(t.TempDir(), task.ID, "task.json")
+		write(t, path, string(raw))
+		if _, refusals := LoadTask(path, nil); !strings.Contains(strings.Join(refusals, "\n"), "task calc-add: clock_at is missing or not RFC 3339") {
+			t.Errorf("%s clock_at %q: refusals %q", name, clock, refusals)
+		}
+	}
+	// A clock before the base commit existed is refused by verify, which reads the commit.
+	f.task.ClockAt = "2025-06-01T09:59:59Z"
+	f.save(t, defaultManifest())
+	s, _, out := f.verify(t)
+	if want := "criterion 1: clock_at 2025-06-01T09:59:59Z is before base_sha's commit at 2025-06-01T10:00:00Z"; s.Success() || !strings.Contains(out, want) {
+		t.Fatalf("want a refusal containing %q:\n%s", want, out)
 	}
 }
 
@@ -476,5 +559,89 @@ func TestCheckoutDeadlineCountsTimeTheMachineSlept(t *testing.T) {
 	rc := co.sh(context.Background(), "sleep 10", nil, 30*time.Minute, filepath.Join(dir, "sleep.log"))
 	if took := time.Since(began); rc != 124 || took > 5*time.Second {
 		t.Fatalf("a 30-minute deadline an hour of wall time ago: exit %d after %s, want 124 at once", rc, took)
+	}
+}
+
+func TestVerifyPinsTheVisibleSuite(t *testing.T) {
+	f := newFixture(t)
+	f.task.VisibleCheck = `d=$(node -p 'new Date().toISOString().slice(0, 10)'); [ "$d" = 2025-06-02 ] || { echo "node sees $d"; exit 1; }; sh test.sh`
+	f.save(t, defaultManifest())
+	s, r, out := f.verify(t)
+	if !s.Success() || r.VisibleBase.Exit != 0 || r.VisibleLanded.Exit != 0 {
+		t.Fatalf("want the visible suite green on the pinned day at base and landed, got %+v\n%s", r, out)
+	}
+}
+
+func TestVerifyPinsTheHiddenCheck(t *testing.T) {
+	f := newFixture(t)
+	f.check = pinnedCheck + goodCheck
+	f.save(t, defaultManifest())
+	s, r, out := f.verify(t)
+	if !s.Success() || r.Landed != 0 || r.Base == 0 {
+		t.Fatalf("want the pinned check green at landed and red at base, got %+v\n%s", r, out)
+	}
+	for _, phase := range []string{"base", "landed", "additions"} {
+		b, _ := os.ReadFile(filepath.Join(f.root, "bench", "verify", "calc-add", phase+"-check.log"))
+		if bytes.Contains(b, []byte("node sees")) || bytes.Contains(b, []byte("from Date.now()")) {
+			t.Errorf("the %s check read an unpinned clock:\n%s", phase, b)
+		}
+	}
+}
+
+func TestVerifyRefusesAClockControlThatReadsRealTime(t *testing.T) {
+	f := newFixture(t)
+	counter := t.TempDir()
+	f.task.VisibleCheck = counting(counter, "sh test.sh")
+	f.check = `echo run >> "` + counter + `/check"` + "\n" + goodCheck
+	f.save(t, defaultManifest())
+	// A node that ignores NODE_OPTIONS and prints the wall clock.
+	shim := t.TempDir()
+	write(t, filepath.Join(shim, "node"), "#!/bin/sh\necho \"$(date +%s)000\"\n")
+	os.Chmod(filepath.Join(shim, "node"), 0o755)
+	t.Setenv("PATH", shim+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	s, r, out := f.verify(t)
+	want := "clock control: node read " + time.Now().UTC().Format("2006-01-02")
+	if s.Success() || !strings.Contains(out, want) || !strings.Contains(out, "for a pin at "+fixtureClock) {
+		t.Fatalf("want a refusal containing %q and the pin:\n%s", want, out)
+	}
+	if entries, _ := os.ReadDir(counter); len(entries) != 0 || r.Base != notRun || r.VisibleBase.Exit != notRun {
+		t.Fatalf("a suite ran after the control failed: %d commits counted, %+v", len(entries), r)
+	}
+	if n := strings.Count(out, "clock control:"); n != 1 {
+		t.Errorf("want one clock refusal for the task, got %d:\n%s", n, out)
+	}
+}
+
+func TestVerifyKeysVisibleRoundsByClock(t *testing.T) {
+	f := newFixture(t)
+	counter := t.TempDir()
+	f.task.VisibleCheck = counting(counter, "sh test.sh")
+	mul, check, m := f.addMulTask(t)
+	mul.VisibleCheck = f.task.VisibleCheck
+	mul.ClockAt = "2025-06-03T12:00:00Z"
+	f.save(t, m)
+	f.saveTask(t, mul, check)
+	s, out := verifyAll(t, f.root, 2)
+	if !s.Success() {
+		t.Fatalf("want both tasks certified:\n%s", out)
+	}
+	if n := runs(t, counter, f.landed); n != 2 {
+		t.Fatalf("the sha both tasks share ran %d times under two clocks, want 2", n)
+	}
+}
+
+// Two node processes started seconds apart must shift a kernel mtime by the same offset:
+// a per-process anchor turned m4's warm index cold (k5 section 6.1).
+func TestClockOffsetIsConstantAcrossSiblingProcesses(t *testing.T) {
+	f := newFixture(t)
+	mtime := `node -p 'Math.floor(require("fs").statSync("shared").mtimeMs)'`
+	f.task.VisibleCheck = `touch shared && ` + mtime + ` > first && sleep 2 && ` + mtime + ` > second && ` +
+		`{ cmp first second || { echo "sibling processes read $(cat first) and $(cat second)"; exit 1; }; } && ` +
+		`{ [ $(( $(date +%s) - $(cat first) / 1000 )) -gt 86400 ] || { echo "the mtime $(cat first) is within a day of the wall clock"; exit 1; }; } && sh test.sh`
+	f.save(t, defaultManifest())
+	s, r, out := f.verify(t)
+	if !s.Success() || r.VisibleBase.Exit != 0 {
+		b, _ := os.ReadFile(filepath.Join(f.root, "bench", "verify", "calc-add", "visible-base.log"))
+		t.Fatalf("want one offset across sibling processes, got %+v\n%s\n%s", r, out, b)
 	}
 }

@@ -79,3 +79,26 @@ func TestRunsRestartsARunAndDropsItsOldVerdict(t *testing.T) {
 		t.Fatalf("runs %+v", runs)
 	}
 }
+
+func TestRecordsWrittenBeforeTheClockStillFold(t *testing.T) {
+	testenv.Isolate(t)
+	old := []Event{
+		{Seq: 1, Type: "bench.verified", Actor: "bench", Evidence: []Evidence{}, V: 1,
+			Data: json.RawMessage(`{"corpus":"v1","corpus_sha":"c","task":"t1","task_sha":"s","base_exit":1,"landed_exit":0,"examined":3}`)},
+		{Seq: 2, Type: "bench.run", Actor: "bench", Evidence: []Evidence{}, V: 1, Data: func() json.RawMessage {
+			var m map[string]any
+			b, _ := json.Marshal(run("v1", "t1", "defect", "small", 1).Data)
+			json.Unmarshal(b, &m)
+			delete(m, "clock_at")
+			delete(m, "clock_offset_ms")
+			b, _ = json.Marshal(m)
+			return b
+		}()},
+	}
+	if v, ok := Verified(old)[[3]string{"v1", "t1", "s"}]; !ok || v.ClockAt != "" || v.Examined != 3 {
+		t.Fatalf("a bench.verified with no clock: %+v %t", v, ok)
+	}
+	if runs := Runs(old); len(runs) != 1 || runs[0].Run.ClockAt != "" {
+		t.Fatalf("a bench.run with no clock: %+v", runs)
+	}
+}

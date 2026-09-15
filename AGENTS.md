@@ -139,6 +139,7 @@ This is the whole list; a reading not on it is not one the orchestrator compares
 | CI verdict | "did the checks run and what did they examine" | `examined > 0`; a job GitHub reports `cancelled` is `red`, never a pass |
 | capacity | "what can one more worker have" | `hostinfo` and `memory_pressure -Q` both read at exit 0 in the same probe, else `unknown` |
 | stall | "has anything of this task's moved" | the live-job count is read from the runner's table, not from a process listing, so short-lived process workloads are not misread as stalls |
+| pinned clock | "what day does the suite, the check and the worker see" | `node -p Date.now()` under the run's environment must read within 120 s of `clock_at`, else the run is refused |
 
 `hist:` every row is a fleet reading that answered a different question than the one asked of it: a live pid read as progress, a memory figure ten times off, a windows CI leg green over zero tests for its whole existence, a `cancelled` job read as a pass, a `pgrep` sample that could not see a workload of thousands of tenth-of-a-second processes.
 

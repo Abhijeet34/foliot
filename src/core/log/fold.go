@@ -39,6 +39,10 @@ type BenchRun struct {
 	Repository         string `json:"repository,omitempty"`
 	RepositoryPublic   *bool  `json:"repository_public,omitempty"`
 	RepositoryLanguage string `json:"repository_language,omitempty"`
+	// ClockAt is the task's pinned instant and ClockOffsetMS what the worker's node clock was
+	// moved by at its launch. Always written; a record from before either still folds.
+	ClockAt       string `json:"clock_at"`
+	ClockOffsetMS int64  `json:"clock_offset_ms"`
 }
 
 // BenchVerdict is bench.verdict's data; Columns holds the per-run columns of a5
@@ -95,16 +99,19 @@ type BenchEstimate struct {
 }
 
 // BenchVerified is bench.verified's data. TaskSHA is sha256 over the task's record and its
-// hidden check; it and Visible are optional so records written before them still fold.
+// hidden check; it, Visible and the clock are optional so records written before them still
+// fold. ClockOffsetMS is what the landed hidden check's node clock was moved by.
 type BenchVerified struct {
-	Corpus     string           `json:"corpus"`
-	CorpusSHA  string           `json:"corpus_sha"`
-	Task       string           `json:"task"`
-	TaskSHA    string           `json:"task_sha"`
-	BaseExit   int              `json:"base_exit"`
-	LandedExit int              `json:"landed_exit"`
-	Examined   int              `json:"examined"`
-	Visible    *VisibleReadings `json:"visible,omitempty"`
+	Corpus        string           `json:"corpus"`
+	CorpusSHA     string           `json:"corpus_sha"`
+	Task          string           `json:"task"`
+	TaskSHA       string           `json:"task_sha"`
+	BaseExit      int              `json:"base_exit"`
+	LandedExit    int              `json:"landed_exit"`
+	Examined      int              `json:"examined"`
+	Visible       *VisibleReadings `json:"visible,omitempty"`
+	ClockAt       string           `json:"clock_at"`
+	ClockOffsetMS int64            `json:"clock_offset_ms"`
 }
 
 // VisibleReadings are the visible suite's runs at base_sha and at landed_sha.

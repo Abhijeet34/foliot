@@ -51,8 +51,10 @@ checkout at base_sha and at base_sha plus only the files the landed change adds,
 exit 0 at landed_sha with examined=<n> as its last line. Then the visible check must
 pass at base_sha and at landed_sha over a non-zero test count, read from its output by
 the corpus's visible_examined_from; these suites run one at a time, after every hidden
-check, once per distinct commit, and a red one runs once more only to name it red or
-flaky. --jobs is how many tasks' hidden checks run at once (default 2).
+check, once per distinct commit and clock, and a red one runs once more only to name it
+red or flaky. Every check and suite runs with node's clock pinned to the task's clock_at,
+and a run whose node does not read that instant is refused. --jobs is how many tasks'
+hidden checks run at once (default 2).
 Prints one line per task, then examined=<n> with per-class counts.
 <root> is $FOLIOT_HOME, an absolute path.
 
