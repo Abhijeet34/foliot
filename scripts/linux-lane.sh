@@ -24,7 +24,10 @@ docker=${FOLIOT_LINUX_LANE_DOCKER:-docker}
 [ -f "$root/go.mod" ] || { echo "error: no go.mod at $root" >&2; exit 2; }
 go_version=$(sed -n 's/^go[[:space:]]*\([0-9][0-9.]*\)$/\1/p' "$root/go.mod")
 [ -n "$go_version" ] || { echo "error: $root/go.mod names no go version" >&2; exit 2; }
-image=foliot-linux-lane:$go_version
+# The local/ prefix marks an image that has no registry behind it, so this machine's weekly
+# maintenance run skips the whole namespace instead of failing to pull a name that exists
+# only here (measured: two foliot images reported as hard ERRORs by the 2026-09-16 run).
+image=local/foliot-linux-lane:$go_version
 work=$(mktemp -d)
 trap '[ -n "${work:-}" ] && [ -d "$work" ] && rm -rf "$work"' EXIT
 
