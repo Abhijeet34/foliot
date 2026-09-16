@@ -49,6 +49,10 @@ type SweepOptions struct {
 	Repeats   int
 	BudgetUSD float64 // 0 on estimate, which is bounded by its caps
 	CapUSD    float64 // 0 means each arm's own cap
+	// NoResume plans every run again, including those a previous invocation already
+	// verdicted: the escape for a condition the corpus sha and the arm's model do not
+	// see, such as a changed cap or a moved model behind a fixed name.
+	NoResume bool
 }
 
 // ErrRefused marks a refusal the command prints as its reason and exits 1 on.
@@ -246,13 +250,61 @@ func plan(arms []Arm, tasks []*Task, repeats int, capUSD float64) []plannedRun {
 	return runs
 }
 
+// runKey identifies one cell of the sweep's cross product, the key log.Runs already folds
+// verdicts by.
+type runKey struct {
+	task, arm, model string
+	repeat           int
+}
+
+// resume drops the planned runs that already carry a verdict, so a sweep killed at run N
+// restarts at run N+1 rather than paying for the first N again (F1). log.Runs supersedes by
+// (corpus, task, arm, repeat), so a run whose verdict never arrived is planned again, and a
+// verdict superseded by a later run of the same cell is not a reason to skip it. The tasks
+// left with no run are dropped with them, since verify and the scoring control are minutes
+// per task and neither is owed for a task this invocation will not run.
+func (s *session) resume(runs []plannedRun, tasks []*Task) ([]plannedRun, []*Task, error) {
+	sha, dirty := corpusVersion(filepath.Join(s.Root, "bench"))
+	events, err := log.Read(log.Path(s.Root), 1)
+	if err != nil {
+		return nil, nil, err
+	}
+	done := map[runKey]bool{}
+	for _, rec := range log.Runs(events) {
+		// A dirty corpus is not identified by its sha, which is the rule verify() already
+		// applies to bench.verified; the model is keyed on too, because an arm repointed at
+		// another model under the same name is a change no corpus sha sees.
+		if rec.Verdict != nil && !dirty && rec.Run.Corpus == s.Corpus && rec.Run.CorpusSHA == sha {
+			done[runKey{rec.Run.Task, rec.Run.Arm, rec.Run.Model, rec.Run.Repeat}] = true
+		}
+	}
+	var keep []plannedRun
+	left := map[string]bool{}
+	for _, r := range runs {
+		if done[runKey{r.task.ID, r.arm.Name, r.arm.Model, r.repeat}] {
+			continue
+		}
+		keep = append(keep, r)
+		left[r.task.ID] = true
+	}
+	var keepTasks []*Task
+	for _, t := range tasks {
+		if left[t.ID] {
+			keepTasks = append(keepTasks, t)
+		}
+	}
+	return keep, keepTasks, nil
+}
+
 // projection decides whether a sweep may start (p8 R15). When every run's cap fits the
 // budget, the caps bound the spend and nothing needs measuring. Otherwise the newest
 // bench.estimate covering every arm projects it, and without one the sweep refuses.
-func (s *session) projection(runs []plannedRun, arms []Arm, tasks int, repeats int, budget float64) (float64, string, error) {
+func (s *session) projection(runs []plannedRun, arms []Arm, budget float64) (float64, string, error) {
 	var caps float64
+	left := map[string]int{}
 	for _, r := range runs {
 		caps += r.cap
+		left[r.arm.Name]++
 	}
 	if caps <= budget {
 		return caps, "caps", nil
@@ -270,12 +322,15 @@ func (s *session) projection(runs []plannedRun, arms []Arm, tasks int, repeats i
 		var projected float64
 		covered := true
 		for _, a := range arms {
+			if left[a.Name] == 0 {
+				continue // every run of this arm is already done; it projects nothing
+			}
 			mean, ok := est.MeanCostUSD[a.Name]
 			if !ok {
 				covered = false
 				break
 			}
-			projected += mean * float64(tasks) * float64(a.repeats(repeats))
+			projected += mean * float64(left[a.Name])
 		}
 		if !covered {
 			continue
@@ -312,10 +367,20 @@ func Run(ctx context.Context, cfg Config, o SweepOptions) error {
 		return err
 	}
 	runs := plan(arms, tasks, o.Repeats, o.CapUSD)
-	projected, basis, err := s.projection(runs, arms, len(tasks), o.Repeats, o.BudgetUSD)
-	fmt.Fprintf(s.Out, "plan: runs=%d arms=%s tasks=%d repeats=%d projected_usd=%.2f basis=%s budget_usd=%.2f\n", len(runs), armList(arms), len(tasks), o.Repeats, projected, basis, o.BudgetUSD)
+	planned := len(runs)
+	if !o.NoResume {
+		if runs, tasks, err = s.resume(runs, tasks); err != nil {
+			return err
+		}
+	}
+	projected, basis, err := s.projection(runs, arms, o.BudgetUSD)
+	fmt.Fprintf(s.Out, "plan: runs=%d reused=%d arms=%s tasks=%d repeats=%d projected_usd=%.2f basis=%s budget_usd=%.2f\n", len(runs), planned-len(runs), armList(arms), len(tasks), o.Repeats, projected, basis, o.BudgetUSD)
 	if err != nil {
 		return err
+	}
+	if len(runs) == 0 {
+		fmt.Fprintf(s.Out, "plan: every planned run of corpus %s already carries a verdict; nothing to run\n", s.Corpus)
+		return nil
 	}
 	_, err = s.sweep(ctx, runs, tasks, o.BudgetUSD)
 	return err

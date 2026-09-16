@@ -20,7 +20,7 @@ import (
 
 var benchUsage = map[string]string{
 	"run": `usage: foliot bench run --corpus <name> --arms <list> --repeats <n> --budget-usd <usd>
-                        [--task <id>]... [--cap-usd <usd>]
+                        [--task <id>]... [--cap-usd <usd>] [--no-resume]
 
 Verifies the selected tasks, runs the isolation probe with the first arm and refuses to
 start unless it proves isolation, then runs every arm on every task --repeats times (the
@@ -28,6 +28,11 @@ ceiling arm once), each in a history-free checkout under a sandboxed per-run HOM
 before any run when the caps sum over --budget-usd and no bench.estimate projects the
 sweep within it. Every run writes bench.run before launch and bench.verdict after the
 hidden check; runs stop at the budget or at 80 percent of the weekly subscription window.
+
+A run of the same corpus sha, task, arm, model and repeat that already carries a
+bench.verdict is not planned again, so a sweep interrupted at run N restarts at run N+1 and
+--budget-usd bounds this invocation alone; the plan line prints how many runs were reused.
+--no-resume plans every run again.
 `,
 	"estimate": `usage: foliot bench estimate --corpus <name> --arms <list> --repeats <n> [--cap-usd <usd>]
 
@@ -67,6 +72,7 @@ func benchCommand(name string, args []string, getenv func(string) string, stdout
 	budget := fs.Float64("budget-usd", 0, "")
 	capUSD := fs.Float64("cap-usd", 0, "")
 	without := fs.Bool("without-isolation", false, "")
+	noResume := fs.Bool("no-resume", false, "")
 	var tasks repeated
 	fs.Var(&tasks, "task", "")
 	usageError := func(msg string) int {
@@ -82,7 +88,7 @@ func benchCommand(name string, args []string, getenv func(string) string, stdout
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	allowed := map[string][]string{
-		"run":      {"corpus", "arms", "repeats", "budget-usd", "task", "cap-usd"},
+		"run":      {"corpus", "arms", "repeats", "budget-usd", "task", "cap-usd", "no-resume"},
 		"estimate": {"corpus", "arms", "repeats", "cap-usd"},
 		"report":   {"corpus", "arms", "task"},
 		"probe":    {"corpus", "arm", "task", "cap-usd", "without-isolation"},
@@ -131,7 +137,7 @@ func benchCommand(name string, args []string, getenv func(string) string, stdout
 	}
 	adapters := map[string]bench.Harness{"claude-code": claudecode.Adapter{Binary: binary}}
 	cfg := bench.Config{Root: root, Corpus: *corpus, Adapters: adapters, Out: stdout, Getenv: getenv}
-	o := bench.SweepOptions{Arms: *arms, Tasks: tasks, Repeats: *repeats, BudgetUSD: *budget, CapUSD: *capUSD}
+	o := bench.SweepOptions{Arms: *arms, Tasks: tasks, Repeats: *repeats, BudgetUSD: *budget, CapUSD: *capUSD, NoResume: *noResume}
 	switch name {
 	case "run":
 		err = bench.Run(ctx, cfg, o)
