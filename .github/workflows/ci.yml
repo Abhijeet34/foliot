@@ -97,6 +97,21 @@ jobs:
       - name: No former product name in the tree
         run: sh scripts/tree-guard.sh .guard/former-name
 
+  lane-guard:
+    name: linux lane guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # The lane itself is a workstation tool and CI already reads Linux directly, so what runs
+      # here is the proof that the lane can go red. A lane nobody can see rot is a lane that
+      # quietly stops catching the thing it was built for.
+      - name: The lane fails on a change this repository's macOS host calls green
+        run: sh scripts/linux-lane-test.sh
+
   secret-scan:
     name: secret scan
     runs-on: ubuntu-24.04
@@ -139,7 +154,7 @@ jobs:
   checks:
     name: checks
     if: always()
-    needs: [go, tree-guards, secret-scan]
+    needs: [go, tree-guards, secret-scan, lane-guard]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

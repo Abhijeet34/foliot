@@ -72,6 +72,12 @@ go test ./...
 go build -trimpath ./cmd/foliot
 ```
 
+CI runs the suite on `ubuntu-24.04`, so on a macOS workstation run the Linux lane before opening a pull request; it needs a container runtime and takes a few minutes.
+
+```sh
+sh scripts/linux-lane.sh
+```
+
 ## Contributing, security and support
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) says how to propose a change and what every pull request needs, and [`AGENTS.md`](AGENTS.md) holds this project's own rules.
