@@ -187,7 +187,7 @@ The immovable column is the core and the movable column is the profile; a rule i
 Every package with tests has `func TestMain(m *testing.M) { os.Exit(testenv.Main(m)) }` and every test starts with `testenv.Isolate(t)`, from `internal/testenv` (R76, a5 §2.17); `go test -v ./...` prints one `FOLIOT_TEST_WITNESS` line per real root and fails a package whose tests changed one.
 A change is not ready for a pull request until `sh scripts/linux-lane.sh` is green as well.
 CI's `go` job runs on `ubuntu-24.04` alone, so a macOS workstation's green says nothing about the leg a merge depends on: on 2026-09-14 two changes passed every test here and were red there once the pull request was open, each costing a fix-and-revalidate round.
-The lane runs `GOOS=linux go vet ./...` on the host and then this tree's `go vet` and `go test -v ./...` inside a Linux container built to match that runner, counts examined tests the way CI counts them, and exits 2 rather than 0 when it has no container runtime to read Linux with.
+The lane runs `GOOS=linux go vet ./...` on the host and then this tree's `go vet` and `go test -v ./...` inside a Linux container built to match that runner, counts examined tests the way CI counts them, and exits 2 rather than 0 when it has no container runtime to read Linux with, or when `go list ./...` itself cannot read the tree; a `go list` that succeeds over zero packages stays red instead.
 `sh scripts/linux-lane-test.sh` is the proof that it can fail, in the shape `scripts/tree-guard-test.sh` already uses: a lane that cannot go red guards nothing, and both run in CI.
 
 ## 7. Judgement the driver keeps

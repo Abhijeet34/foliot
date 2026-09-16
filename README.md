@@ -47,7 +47,7 @@ FOLIOT_HOME=<root> foliot bench run --corpus v1 --arms bare-large,bare-small --r
 FOLIOT_HOME=<root> foliot bench report --corpus v1
 ```
 
-The arms, their models, training cutoffs and per-run caps, each adapter's credential file, and any extra paths a worker must not read live in `$FOLIOT_HOME/profile/bench.json`, not in the code.
+The arms, their models, training cutoffs and per-run caps, each adapter's credential file, any extra paths a worker must not read, and the load ceiling above which no run starts live in `$FOLIOT_HOME/profile/bench.json`, not in the code.
 Each run drives `claude -p` headless in a checkout that holds `base_sha` and no other commit, under its own `HOME` with a sandbox profile written into it.
 A per-run `HOME` alone does not hide the hidden checks: it changes what the harness loads, not what its shell can read.
 
@@ -56,6 +56,7 @@ Only then does it ask the first arm to print a hidden check, fetch the landed pa
 `foliot bench probe --without-isolation` is the same probe without the profile, and it prints the check.
 
 Every column comes from the harness's own stream: tokens, cost, wall time, how the run ended and how it was billed.
+A run refuses to start when the one-minute load average reads above the profile's load ceiling, so a wall-time column never mixes a run taken on a quiet machine with one taken on a loaded one.
 The hidden check then runs on `base_sha` plus the worker's changes, in a tree the worker never touched.
 `bench run` refuses before the first run when the per-run caps sum over `--budget-usd` and no `bench estimate` projects the sweep inside it; the probe's own cost counts against the budget too, each run starts only when its cap still fits within what remains, and the sweep stops when the subscription's weekly window reads 80 percent used.
 A run of the same corpus sha, task, arm, model and repeat that already carries a `bench.verdict` is not planned again, so a sweep interrupted partway through resumes at the next run rather than paying for the finished ones twice; `--no-resume` plans every run again.
