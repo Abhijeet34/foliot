@@ -40,6 +40,10 @@ const usage = `usage:
   foliot bench probe --corpus <name> --arm <arm> [--task <id>] [--without-isolation]
                            ask an arm to print a hidden check and record what it saw
 
+The families above are what is built. Every other family AGENTS.md section 8 names
+is planned and not built; running one exits 2 saying so rather than calling it an
+unknown command.
+
 <root> is $FOLIOT_HOME, an absolute path. A usage error exits 2.
 `
 
@@ -81,21 +85,14 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
-	case "replay":
-		return replay(args[1:], getenv, stdout, stderr)
-	case "bench":
-		if len(args) >= 3 && args[1] == "corpus" && args[2] == "verify" {
-			return corpusVerify(args[3:], getenv, stdout, stderr)
-		}
-		if len(args) >= 2 {
-			switch args[1] {
-			case "run", "estimate", "report", "probe":
-				return benchCommand(args[1], args[2:], getenv, stdout, stderr)
-			}
-		}
 	}
-	fmt.Fprintf(stderr, "foliot: unknown command %q\n%s", strings.Join(args, " "), usage)
-	return 2
+	switch c, named := lookup(args[0]); {
+	case named && c.built():
+		return c.run(args[1:], getenv, stdout, stderr)
+	case named:
+		return planned(c.name, stderr)
+	}
+	return unknown(args, stderr)
 }
 
 func replay(args []string, getenv func(string) string, stdout, stderr io.Writer) int {

@@ -1,7 +1,9 @@
 # Operating manual
 
 This is the orchestrator's own manual, written for an agent driving it and for an agent working inside it.
-The test it must pass is that an agent that has never seen the tool can operate it correctly from this document and `foliot <command> --help` alone: first run from an empty home, submit a request and answer its questions to dispatch, read status and resolve a decision, each reaching its terminal event with zero human messages and zero commands refused as malformed.
+It describes the tool the project is building, and most of that tool is not built yet: section 8 marks every command family built or planned, and a planned command exits 2 naming itself planned rather than running.
+Read every present-tense sentence outside section 8 as the contract a built command is accepted against, not as a description of what runs today; an agent planning work against this document plans against section 8's Built column first.
+The acceptance test the completed tool must pass, and which no command family passes today, is that an agent that has never seen the tool can operate it correctly from this document and `foliot <command> --help` alone: first run from an empty home, submit a request and answer its questions to dispatch, read status and resolve a decision, each reaching its terminal event with zero human messages and zero commands refused as malformed.
 Usage errors exit 2.
 Every rule here names its source: an invariant or contract assertion (`K1`..`K8`, `A1`..`A12`, `G1`..`G9`), an event type from the closed catalogue, a profile field, or a requirement `R<n>` of the product requirements; a measurement from the fleet that ran on this machine in 2026 is marked `hist:` and is history, never an instruction.
 Two words are fixed: the **driver** is whoever runs `foliot` commands, the **human** is the person whose profile this home runs under and whose decisions some events wait on; how the human is addressed is a profile field asked at first run (`report.address`, R59), and "you" is used until it is answered.
@@ -204,25 +206,28 @@ Each names the row of the 2026 corpus audit it came from and the evidence it car
 ## 8. Command index
 
 Every `foliot` command the design corpus names, one line each; a command marked **declared here** is named in this document and owed by the architecture.
+The Built column is the honest one: `yes` is a family `cmd/foliot` dispatches today, `planned` is one that exits 2 with `planned, not built (AGENTS.md section 8)`.
+Built today: 2 of 19 command families; the other 17 are planned.
+`cmd/foliot/commands.go` holds the same list in code and is the only place builtness is recorded, and `TestManualCommandIndexMatchesTheCode` fails when this table, that count or that list disagree.
 
-| Command | What it does | Source |
-| --- | --- | --- |
-| `foliot init --check --json`, `foliot init --answer <field>=<value>` | first run; nothing dispatches until `--check` exits 0 | R58 |
-| `foliot submit -F <file>` | records a request and starts intake | **declared here** |
-| `foliot answer <key> -F <file>`, `foliot answer <key> --unnecessary` | answers a question or a decision; marks one unnecessary | R24; `-F` **declared here** |
-| `foliot feedback -F <file> --target <task-id>` | feedback that re-enters intake | R26; shape **declared here** |
-| `foliot cancel <task-id> --reason <text>` | records `task.cancelled` | **declared here** |
-| `foliot status`, `foliot status --json` | one line per live task; the derived state | R60 |
-| `foliot digest` | the bounded digest with every open question | R61 |
-| `foliot log tail` | the live tail of the event log | R1 |
-| `foliot ledger` | failure keys with count, rung, owed | R40 |
-| `foliot report real-work --since <ts>`, `foliot report lost-work --since <ts>` | real work landed; the no-lost-work reading | R18; a5 §2.19 |
-| `foliot capacity --probe` | the machine's admission line | R69 |
-| `foliot profile lint [--check <path>]` | every profile field beside its reader; the prose list | R57 |
-| `foliot core-check` | no harness name and no profile string in the core | K8 |
-| `foliot replay --verify` | fold the log twice and compare | K1 |
-| `foliot conformance --kernel`, `--adapter <name>`, `--all-adapters`, `--gate <name>` | the contract suites with counts | R2, R54 |
-| `foliot chaos --all` | the recovery cases on the `fake` adapter | R47 |
-| `foliot bench corpus verify --corpus v1`, `foliot bench estimate`, `foliot bench run`, `foliot bench report`, `foliot bench probe` | the benchmark instrument; `probe` is the isolation proof every sweep runs first; `run` plans only the cells of `(corpus_sha, task, arm, model, repeat)` with no `bench.verdict` yet, so a sweep interrupted at run N restarts at N+1 and `--budget-usd` bounds that invocation alone, and `--no-resume` plans every run again | R9 to R17; `probe` and `--no-resume` **declared here** |
-| `foliot import --from tasks-axi <backlog.md> --verify` | import the previous queue and its holds | a5 §2.19 |
-| `foliot update` | explicit update; refuses while a task is live | R75 |
+| Command | What it does | Built | Source |
+| --- | --- | --- | --- |
+| `foliot init --check --json`, `foliot init --answer <field>=<value>` | first run; nothing dispatches until `--check` exits 0 | planned | R58 |
+| `foliot submit -F <file>` | records a request and starts intake | planned | **declared here** |
+| `foliot answer <key> -F <file>`, `foliot answer <key> --unnecessary` | answers a question or a decision; marks one unnecessary | planned | R24; `-F` **declared here** |
+| `foliot feedback -F <file> --target <task-id>` | feedback that re-enters intake | planned | R26; shape **declared here** |
+| `foliot cancel <task-id> --reason <text>` | records `task.cancelled` | planned | **declared here** |
+| `foliot status`, `foliot status --json` | one line per live task; the derived state | planned | R60 |
+| `foliot digest` | the bounded digest with every open question | planned | R61 |
+| `foliot log tail` | the live tail of the event log | planned | R1 |
+| `foliot ledger` | failure keys with count, rung, owed | planned | R40 |
+| `foliot report real-work --since <ts>`, `foliot report lost-work --since <ts>` | real work landed; the no-lost-work reading | planned | R18; a5 §2.19 |
+| `foliot capacity --probe` | the machine's admission line | planned | R69 |
+| `foliot profile lint [--check <path>]` | every profile field beside its reader; the prose list | planned | R57 |
+| `foliot core-check` | no harness name and no profile string in the core | planned | K8 |
+| `foliot replay --verify` | fold the log twice and compare | yes | K1 |
+| `foliot conformance --kernel`, `--adapter <name>`, `--all-adapters`, `--gate <name>` | the contract suites with counts | planned | R2, R54 |
+| `foliot chaos --all` | the recovery cases on the `fake` adapter | planned | R47 |
+| `foliot bench corpus verify --corpus v1`, `foliot bench estimate`, `foliot bench run`, `foliot bench report`, `foliot bench probe` | the benchmark instrument; `probe` is the isolation proof every sweep runs first; `run` plans only the cells of `(corpus_sha, task, arm, model, repeat)` with no `bench.verdict` yet, so a sweep interrupted at run N restarts at N+1 and `--budget-usd` bounds that invocation alone, and `--no-resume` plans every run again | yes | R9 to R17; `probe` and `--no-resume` **declared here** |
+| `foliot import --from tasks-axi <backlog.md> --verify` | import the previous queue and its holds | planned | a5 §2.19 |
+| `foliot update` | explicit update; refuses while a task is live | planned | R75 |
