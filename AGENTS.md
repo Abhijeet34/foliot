@@ -223,6 +223,6 @@ Every `foliot` command the design corpus names, one line each; a command marked 
 | `foliot replay --verify` | fold the log twice and compare | K1 |
 | `foliot conformance --kernel`, `--adapter <name>`, `--all-adapters`, `--gate <name>` | the contract suites with counts | R2, R54 |
 | `foliot chaos --all` | the recovery cases on the `fake` adapter | R47 |
-| `foliot bench corpus verify --corpus v1`, `foliot bench estimate`, `foliot bench run`, `foliot bench report`, `foliot bench probe` | the benchmark instrument; `probe` is the isolation proof every sweep runs first | R9 to R17; `probe` **declared here** |
+| `foliot bench corpus verify --corpus v1`, `foliot bench estimate`, `foliot bench run`, `foliot bench report`, `foliot bench probe` | the benchmark instrument; `probe` is the isolation proof every sweep runs first; `run` plans only the cells of `(corpus_sha, task, arm, model, repeat)` with no `bench.verdict` yet, so a sweep interrupted at run N restarts at N+1 and `--budget-usd` bounds that invocation alone, and `--no-resume` plans every run again | R9 to R17; `probe` and `--no-resume` **declared here** |
 | `foliot import --from tasks-axi <backlog.md> --verify` | import the previous queue and its holds | a5 §2.19 |
 | `foliot update` | explicit update; refuses while a task is live | R75 |
