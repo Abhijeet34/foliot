@@ -25,7 +25,9 @@ type Log struct {
 	lockInfo os.FileInfo
 	seq      int64
 	size     int64
-	broken   error // set when the file may no longer match seq and size
+	opened   int64  // the seq of this process's home.opened, which its home.closed names
+	started  string // this process's instant, the one home.lock carries
+	broken   error  // set when the file may no longer match seq and size
 }
 
 // LockedError names the live process that holds home.lock.
@@ -64,6 +66,13 @@ func Open(root string, now func() time.Time) (*Log, error) {
 		}
 		return nil, err
 	}
+	// Last, so that a repair or a takeover this open performed is already on the log when
+	// the process announces itself, and a failed open announces nothing.
+	if l.opened, err = l.append(orchestrator("home.opened", map[string]any{"pid": os.Getpid(), "started_at": l.started})); err != nil {
+		l.lock.Close()
+		l.f.Close()
+		return nil, err
+	}
 	return l, nil
 }
 
@@ -88,7 +97,8 @@ func (l *Log) takeLock() (stale []byte, err error) {
 	}
 	stale, err = io.ReadAll(f)
 	if err == nil {
-		content, _ := json.Marshal(lockContent{os.Getpid(), l.now().UTC().Format(tsLayout)})
+		l.started = l.now().UTC().Format(tsLayout)
+		content, _ := json.Marshal(lockContent{os.Getpid(), l.started})
 		if err = f.Truncate(0); err == nil {
 			_, err = f.WriteAt(append(content, '\n'), 0)
 		}
@@ -271,7 +281,12 @@ func (l *Log) Close() error {
 	if l.f == nil {
 		return nil
 	}
-	err := l.f.Close()
+	// A log already broken cannot record its close, and the unpaired open it leaves is
+	// then the true reading, so this error never stops the lock being released.
+	_, err := l.append(orchestrator("home.closed", map[string]any{"pid": os.Getpid(), "opened_seq": l.opened}))
+	if cerr := l.f.Close(); err == nil {
+		err = cerr
+	}
 	l.f = nil
 	if terr := l.lock.Truncate(0); err == nil {
 		err = terr

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -97,7 +98,7 @@ func record(t *testing.T, root string) {
 	l.Close()
 	data, _ := os.ReadFile(log.Path(root))
 	lines := bytes.SplitAfter(data, []byte("\n"))
-	copy(lines[3][2:14], "corrupted!!!") // seq 4, the bare-small verdict
+	copy(lines[4][2:14], "corrupted!!!") // seq 5, the bare-small verdict; line 1 is home.opened
 	os.WriteFile(log.Path(root), bytes.Join(lines, nil), 0o600)
 	if l, err = log.Open(root, now); err != nil {
 		t.Fatal(err)
@@ -113,6 +114,9 @@ func TestRecordedLogIsWhatTheWriterWrites(t *testing.T) {
 	root := testenv.Isolate(t)
 	record(t, root)
 	got, _ := os.ReadFile(log.Path(root))
+	// home.opened and home.closed carry this process's pid, which changes every run, so
+	// the fixture holds a fixed one and the writer's bytes are compared against it.
+	got = regexp.MustCompile(`"pid":[0-9]+`).ReplaceAll(got, []byte(`"pid":0`))
 	fixture := filepath.Join("testdata", "home", "log", "events.jsonl")
 	if os.Getenv("FOLIOT_UPDATE_TESTDATA") != "" {
 		os.WriteFile(fixture, got, 0o600)

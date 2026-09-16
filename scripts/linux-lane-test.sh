@@ -141,5 +141,12 @@ else
   failed=$((failed + 1))
 fi
 
+# A third way not to read Linux: a toolchain that cannot list the tree. It printed nothing and
+# the lane called the tree red, which is the misreport this case pins (measured 2026-09-16, a
+# sandbox denying go's default GOCACHE).
+module unreadable
+printf 'module example.test\n\ngo 1.27\n\nrequire nonsense\n' > "$mod/go.mod"
+expect 2 'could not read' 'a toolchain that cannot list the tree is exit 2, never a red tree'
+
 echo "examined=$cases cases, failed=$failed"
 [ "$cases" -gt 0 ] && [ "$failed" -eq 0 ]

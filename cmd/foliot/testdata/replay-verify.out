@@ -1,5 +1,5 @@
 {
-  "last_seq": 9,
+  "last_seq": 13,
   "bench": {
     "defect": {
       "claude-opus-5": {
@@ -22,4 +22,4 @@
     }
   }
 }
-replay --verify: events=8 folds=2 identical=true state_sha256=33cef1ca1df76e32236ee58088f5ad2e5eabbfc30183a7eb388e17ce128f7efc
+replay --verify: events=12 folds=2 identical=true state_sha256=8dcbb01e543309b3df1a0b9ab8da29ffe41e68b170b823948c4a9458e880d6b1

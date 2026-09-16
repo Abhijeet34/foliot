@@ -161,7 +161,7 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 	}
 	for _, rec := range runs {
 		run, v := rec.Run, rec.Verdict
-		if v == nil || !run.IsolationProven || run.IsolationProbe != 2 || !run.HistoryFree || run.LandedObjectExit != 1 ||
+		if v == nil || !run.IsolationProven || run.IsolationProbe != 3 || !run.HistoryFree || run.LandedObjectExit != 1 ||
 			run.ModelCutoff != "2026-01" || run.PublicSince == "" || run.CorpusSHA == "" || run.BaseExit == 0 || run.LandedExit != 0 ||
 			run.Adapter != "fake" || run.Provider != "test" || run.CapUSD != 1 {
 			t.Fatalf("run record lacks a reading: %+v verdict %+v", run, v)
@@ -947,5 +947,85 @@ func TestResumeReadsTheFoldAndNotASecondBookkeepingFile(t *testing.T) {
 	write(t, filepath.Join(r.root, "bench", "checks", "calc-add", "check.sh"), goodCheck+"\n# moved\n")
 	if got := strings.Join(left(), ","); got != "fixer/1,fixer/2,idle/1,idle/2" {
 		t.Fatalf("resume reused a verdict under a dirty corpus: %q", got)
+	}
+}
+
+// setMaxLoad rewrites the fixture's profile with a load ceiling.
+func (r *runnerFixture) setMaxLoad(t *testing.T, max float64) {
+	t.Helper()
+	var p Profile
+	if err := readJSON(ProfilePath(r.root), &p); err != nil {
+		t.Fatal(err)
+	}
+	p.MaxLoadAtStart = max
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, ProfilePath(r.root), string(b))
+}
+
+// stubLoad puts this machine's load reading on a chosen side of a ceiling; the real
+// reading is the machine's and cannot be asked to be either.
+func stubLoad(t *testing.T, v float64) {
+	t.Helper()
+	prev := loadAverage
+	loadAverage = func() *float64 { return &v }
+	t.Cleanup(func() { loadAverage = prev })
+}
+
+// Every column of the four live runs was measured at a load between 20 and 152 on an
+// 8-processor machine and nothing refused them, so wall_ms was not comparable across
+// them (critique c8 F4). The ceiling refuses in the shape clockControl refuses, and the
+// refusal is on the log rather than only on stdout.
+func TestARunAboveTheProfilesLoadCeilingIsRefusedAndRecorded(t *testing.T) {
+	r := newRunnerFixture(t)
+	r.setMaxLoad(t, 4)
+	stubLoad(t, 91.4)
+	err := Run(context.Background(), r.cfg, SweepOptions{Arms: "fixer", Repeats: 1, BudgetUSD: 10, CapUSD: 1})
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "91.40") || !strings.Contains(err.Error(), "4.00") {
+		t.Fatalf("Run at load 91.4 under a ceiling of 4 = %v, want a refusal naming both\n%s", err, r.out)
+	}
+	t.Logf("refusal: %v", err)
+	if n := r.launched(); n != 0 {
+		t.Fatalf("%d harness processes launched above the ceiling, want none", n)
+	}
+	events, err := log.Read(log.Path(r.root), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refusals []log.BenchRefused
+	for _, e := range events {
+		var d log.BenchRefused
+		if e.Type == "bench.refused" && json.Unmarshal(e.Data, &d) == nil {
+			refusals = append(refusals, d)
+		}
+	}
+	if len(refusals) != 1 || refusals[0].Control != "load" || refusals[0].LoadAtStart == nil ||
+		*refusals[0].LoadAtStart != 91.4 || refusals[0].MaxLoad != 4 {
+		t.Fatalf("bench.refused records %+v, want one load refusal carrying the reading and the ceiling", refusals)
+	}
+	t.Logf("bench.refused: %+v", refusals[0])
+}
+
+// The other half of the control: under the same ceiling, a run whose machine reads
+// below it proceeds to a verdict.
+func TestARunBelowTheProfilesLoadCeilingProceeds(t *testing.T) {
+	r := newRunnerFixture(t)
+	r.setMaxLoad(t, 4)
+	stubLoad(t, 0.5)
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "fixer", Repeats: 1, BudgetUSD: 10, CapUSD: 1}); err != nil {
+		t.Fatalf("Run at load 0.5 under a ceiling of 4: %v\n%s", err, r.out)
+	}
+	events, err := log.Read(log.Path(r.root), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := log.Runs(events)
+	if len(runs) != 1 || runs[0].Verdict == nil {
+		t.Fatalf("want one run with a verdict, got %d\n%s", len(runs), r.out)
+	}
+	if load, ok := runs[0].Verdict.Columns["load_at_start"]; !ok || load != 0.5 {
+		t.Fatalf("load_at_start column %v, want the 0.5 the control admitted", load)
 	}
 }

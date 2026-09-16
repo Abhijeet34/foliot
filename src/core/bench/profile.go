@@ -19,6 +19,10 @@ type Profile struct {
 	DenyRead []string `json:"deny_read"`
 	// Credentials maps an adapter name to the file holding its token, mode 0600.
 	Credentials map[string]string `json:"credentials"`
+	// MaxLoadAtStart is the one-minute load average above which no run starts; 0 is no
+	// ceiling. A machine's own capacity is a value someone else sets differently, so the
+	// number is here and the refusal is in the core (a5 section 2.21).
+	MaxLoadAtStart float64 `json:"max_load_at_start,omitempty"`
 }
 
 // Arm is one benchmark row that runs a model bare: no orchestrator, router or gate.
@@ -73,6 +77,9 @@ func LoadProfile(root string, adapters map[string]Harness) (*Profile, error) {
 	}
 	if len(p.Arms) == 0 {
 		problems = append(problems, "arms is empty")
+	}
+	if p.MaxLoadAtStart < 0 {
+		problems = append(problems, fmt.Sprintf("max_load_at_start %.2f is negative", p.MaxLoadAtStart))
 	}
 	for _, d := range p.DenyRead {
 		if !filepath.IsAbs(d) {
