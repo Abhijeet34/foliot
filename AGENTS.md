@@ -103,7 +103,7 @@ Recoveries run unasked when they are reversible and lose nothing; the human's st
 | worker process dies mid-attempt | `worker-dead`: resume with the session handle when one exists, else a new attempt on the same workspace; the workspace is never deleted | no |
 | worker stalled twice | `worker-stalled`: interrupt, resume with a steer naming the last event | no |
 | runner job dies or hits its deadline | `job-dead`: save the output, rerun once | no |
-| orchestrator killed | `reconcile`: fold the log, probe every worker and job without an exit event, resume the alive ones and record the dead | no |
+| orchestrator killed | `reconcile`: fold the log, probe every worker and job without an exit event, resume the alive ones and record the dead; the condition it reads is a `home.opened` that no `home.closed` names, whose `pid` and `started_at` are the pair `home.lock` carries | no |
 | torn log tail; unreadable event | `log-repair`; `quarantine` | no |
 | workspace deleted under a live task | `workspace-lost`: end the attempt failed and report exactly what survives, which is everything up to the last verb commit's `attempt/<task>/<n>` tag | no |
 | stale CI run | `ci-rerun`: one rerun per attempt under the recorded grant, log saved first | no under the grant, else yes |
@@ -142,6 +142,7 @@ This is the whole list; a reading not on it is not one the orchestrator compares
 | capacity | "what can one more worker have" | `hostinfo` and `memory_pressure -Q` both read at exit 0 in the same probe, else `unknown` |
 | stall | "has anything of this task's moved" | the live-job count is read from the runner's table, not from a process listing, so short-lived process workloads are not misread as stalls |
 | pinned clock | "what day does the suite, the check and the worker see" | `node -p Date.now()` under the run's environment must read within 120 s of `clock_at`, else the run is refused |
+| machine load | "is this machine quiet enough for a timing to mean anything" | the one-minute load average must read at or below the profile's `max_load_at_start`, else the run is refused and the refusal is recorded as `bench.refused`; a platform with no load reading is `unknown` and refuses too |
 
 `hist:` every row is a fleet reading that answered a different question than the one asked of it: a live pid read as progress, a memory figure ten times off, a windows CI leg green over zero tests for its whole existence, a `cancelled` job read as a pass, a `pgrep` sample that could not see a workload of thousands of tenth-of-a-second processes.
 

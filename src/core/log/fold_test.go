@@ -38,7 +38,7 @@ func TestFoldBenchState(t *testing.T) {
 	}
 	st := Fold(evs)
 	got, _ := json.Marshal(st)
-	want := `{"last_seq":10,"bench":{"defect":{"small":{"pass_rate":0.6666666666666666,"n":3,"cost_median":2}},"feature":{"large":{"pass_rate":1,"n":1,"cost_median":null}}}}`
+	want := `{"last_seq":11,"bench":{"defect":{"small":{"pass_rate":0.6666666666666666,"n":3,"cost_median":2}},"feature":{"large":{"pass_rate":1,"n":1,"cost_median":null}}}}`
 	if string(got) != want {
 		t.Fatalf("state\n%s\nwant\n%s", got, want)
 	}
@@ -48,10 +48,10 @@ func TestFoldBenchState(t *testing.T) {
 		t.Fatal("two folds of one log differ")
 	}
 	// An event a log.quarantined names is skipped even when it reads as valid.
-	q := Event{Seq: 11, Type: "log.quarantined", Actor: "orchestrator", Evidence: []Evidence{}, Data: json.RawMessage(`{"seq":8,"reason":"test"}`), V: 1}
+	q := Event{Seq: 12, Type: "log.quarantined", Actor: "orchestrator", Evidence: []Evidence{}, Data: json.RawMessage(`{"seq":9,"reason":"test"}`), V: 1}
 	skipped, _ := json.Marshal(Fold(append(evs, q)))
-	if want := `{"last_seq":11,"bench":{"defect":{"small":{"pass_rate":0.5,"n":2,"cost_median":2}},"feature":{"large":{"pass_rate":1,"n":1,"cost_median":null}}}}`; string(skipped) != want {
-		t.Fatalf("state with seq 8 quarantined\n%s\nwant\n%s", skipped, want)
+	if want := `{"last_seq":12,"bench":{"defect":{"small":{"pass_rate":0.5,"n":2,"cost_median":2}},"feature":{"large":{"pass_rate":1,"n":1,"cost_median":null}}}}`; string(skipped) != want {
+		t.Fatalf("state with seq 9 quarantined\n%s\nwant\n%s", skipped, want)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestRunsRestartsARunAndDropsItsOldVerdict(t *testing.T) {
 	}
 	evs, _ := Read(Path(root), 1)
 	runs := Runs(evs)
-	if len(runs) != 2 || runs[0].Seq != 3 || runs[0].Verdict != nil || runs[1].Seq != 4 || runs[1].Verdict == nil || runs[1].Verdict.Pass {
+	if len(runs) != 2 || runs[0].Seq != 4 || runs[0].Verdict != nil || runs[1].Seq != 5 || runs[1].Verdict == nil || runs[1].Verdict.Pass {
 		t.Fatalf("runs %+v", runs)
 	}
 }

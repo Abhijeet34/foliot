@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,24 +111,25 @@ func TestAppendWritesTheEnvelopeInOrder(t *testing.T) {
 	root := testenv.Isolate(t)
 	l := open(t, root)
 	task := "log-core-l1"
-	if seq := mustAppend(t, l, run("v1", "t1", "defect", "m", 1)); seq != 1 {
-		t.Fatalf("first seq %d, want 1", seq)
+	// seq 1 and the log's first line are this process's home.opened.
+	if seq := mustAppend(t, l, run("v1", "t1", "defect", "m", 1)); seq != 2 {
+		t.Fatalf("first appended seq %d, want 2", seq)
 	}
 	e := verdict("v1", "t1", "m", 1, true, 0.5)
 	e.Task, e.Evidence = &task, []Evidence{{Kind: "file", Ref: "bench/checks/t1/check.sh"}}
-	cause := int64(1)
+	cause := int64(2)
 	e.Cause = &cause
-	if seq := mustAppend(t, l, e); seq != 2 {
-		t.Fatalf("second seq %d, want 2", seq)
+	if seq := mustAppend(t, l, e); seq != 3 {
+		t.Fatalf("second appended seq %d, want 3", seq)
 	}
 	data, _ := os.ReadFile(Path(root))
 	lines := strings.Split(string(data), "\n")
-	want := `{"seq":2,"ts":"2026-09-14T12:00:00.003Z","type":"bench.verdict","task":"log-core-l1","attempt":null,"actor":"bench","cause":1,"evidence":[{"kind":"file","ref":"bench/checks/t1/check.sh"}],"data":{"corpus":"v1","task":"t1","arm":"bare-m","repeat":1,"pass":true,"false_claim":false,"columns":{"cost_usd":0.5},"check_exit":0,"examined":0,"check_confined":false},"v":1}`
-	if len(lines) != 3 || lines[2] != "" || lines[1] != want {
-		t.Fatalf("log is\n%s\nwant line 2\n%s", data, want)
+	want := `{"seq":3,"ts":"2026-09-14T12:00:00.004Z","type":"bench.verdict","task":"log-core-l1","attempt":null,"actor":"bench","cause":2,"evidence":[{"kind":"file","ref":"bench/checks/t1/check.sh"}],"data":{"corpus":"v1","task":"t1","arm":"bare-m","repeat":1,"pass":true,"false_claim":false,"columns":{"cost_usd":0.5},"check_exit":0,"examined":0,"check_confined":false},"v":1}`
+	if len(lines) != 4 || lines[3] != "" || lines[2] != want {
+		t.Fatalf("log is\n%s\nwant line 3\n%s", data, want)
 	}
-	if !strings.Contains(lines[0], `"evidence":[]`) {
-		t.Fatalf("an event with no evidence must carry an empty array: %s", lines[0])
+	if !strings.Contains(lines[1], `"evidence":[]`) {
+		t.Fatalf("an event with no evidence must carry an empty array: %s", lines[1])
 	}
 }
 
@@ -153,8 +156,8 @@ func TestCatalogueRefusesAndConsumesNoSeq(t *testing.T) {
 			t.Errorf("%s: err = %v, want a refusal", name, err)
 		}
 	}
-	if seq := mustAppend(t, l, run("v1", "t1", "defect", "m", 1)); seq != 1 {
-		t.Fatalf("seq after ten refusals is %d, want 1", seq)
+	if seq := mustAppend(t, l, run("v1", "t1", "defect", "m", 1)); seq != 2 {
+		t.Fatalf("seq after ten refusals is %d, want 2 (home.opened took seq 1)", seq)
 	}
 	if fi, _ := os.Stat(Path(root)); fi.Size() > 1024 {
 		t.Fatalf("a refused event reached the file: %d bytes", fi.Size())
@@ -168,36 +171,36 @@ func TestTornLastLineIsCutMovedAndRecorded(t *testing.T) {
 	mustAppend(t, l, run("v1", "t2", "defect", "m", 1))
 	l.Close()
 	full, _ := os.ReadFile(Path(root))
-	firstLine := bytes.IndexByte(full, '\n') + 1
-	torn := full[:len(full)-9] // the second line loses its last nine bytes, newline included
+	lastLine := bytes.LastIndex(full[:len(full)-1], []byte("\n")) + 1
+	torn := full[:len(full)-9] // the last line loses its last nine bytes, newline included
 	os.WriteFile(Path(root), torn, 0o600)
 
-	if err := Verify(Path(root)); err == nil || !strings.Contains(err.Error(), "log seq 2: torn last line, ") {
-		t.Fatalf("Verify before repair = %v, want the torn line named at seq 2", err)
+	if err := Verify(Path(root)); err == nil || !strings.Contains(err.Error(), "log seq 4: torn last line, ") {
+		t.Fatalf("Verify before repair = %v, want the torn line named at seq 4", err)
 	}
 	l = open(t, root)
 	evs := readAll(t, root)
-	if got := types(evs); got != "1:bench.run 2:log.repaired" {
+	if got := types(evs); got != "1:home.opened 2:bench.run 3:bench.run 4:log.repaired 5:home.opened" {
 		t.Fatalf("events after repair: %s", got)
 	}
 	var rep struct {
 		DroppedBytes int    `json:"dropped_bytes"`
 		MovedTo      string `json:"moved_to"`
 	}
-	json.Unmarshal(evs[1].Data, &rep)
+	json.Unmarshal(evs[3].Data, &rep)
 	moved, err := os.ReadFile(filepath.Join(root, rep.MovedTo))
-	if err != nil || !bytes.Equal(moved, torn[firstLine:]) || rep.DroppedBytes != len(moved) {
-		t.Fatalf("moved_to %s holds %q (err %v), dropped_bytes %d; want the %d torn bytes", rep.MovedTo, moved, err, rep.DroppedBytes, len(torn)-firstLine)
+	if err != nil || !bytes.Equal(moved, torn[lastLine:]) || rep.DroppedBytes != len(moved) {
+		t.Fatalf("moved_to %s holds %q (err %v), dropped_bytes %d; want the %d torn bytes", rep.MovedTo, moved, err, rep.DroppedBytes, len(torn)-lastLine)
 	}
 	now, _ := os.ReadFile(Path(root))
-	if !bytes.HasPrefix(now, full[:firstLine]) {
+	if !bytes.HasPrefix(now, full[:lastLine]) {
 		t.Fatal("the last complete event was not left intact")
 	}
 	if err := Verify(Path(root)); err != nil {
 		t.Fatalf("Verify after repair: %v", err)
 	}
-	if seq := mustAppend(t, l, run("v1", "t2", "defect", "m", 1)); seq != 3 {
-		t.Fatalf("next seq %d, want 3", seq)
+	if seq := mustAppend(t, l, run("v1", "t2", "defect", "m", 1)); seq != 6 {
+		t.Fatalf("next seq %d, want 6", seq)
 	}
 }
 
@@ -225,17 +228,17 @@ func TestGarbageLineIsQuarantinedOnceAndNeverEdited(t *testing.T) {
 		t.Fatal("the corrupt line or its neighbours were edited")
 	}
 	evs := readAll(t, root)
-	if got := types(evs); got != "1:bench.run 3:bench.run 4:log.quarantined" {
+	if got := types(evs); got != "1:home.opened 3:bench.run 4:bench.run 5:home.closed 6:log.quarantined 7:home.opened 8:home.closed 9:home.opened" {
 		t.Fatalf("events: %s", got)
 	}
-	if !strings.HasPrefix(string(evs[2].Data), `{"reason":"unparseable: `) || !strings.HasSuffix(string(evs[2].Data), `,"seq":2}`) {
-		t.Fatalf("quarantine data %s", evs[2].Data)
+	if !strings.HasPrefix(string(evs[4].Data), `{"reason":"unparseable: `) || !strings.HasSuffix(string(evs[4].Data), `,"seq":2}`) {
+		t.Fatalf("quarantine data %s", evs[4].Data)
 	}
 	if err := Verify(Path(root)); err != nil {
 		t.Fatalf("Verify after quarantine: %v", err)
 	}
-	if seq := mustAppend(t, l, run("v1", "t9", "defect", "m", 1)); seq != 5 {
-		t.Fatalf("next seq %d, want 5", seq)
+	if seq := mustAppend(t, l, run("v1", "t9", "defect", "m", 1)); seq != 10 {
+		t.Fatalf("next seq %d, want 10", seq)
 	}
 }
 
@@ -261,8 +264,9 @@ func TestCorruptedSeqOrLastLineIsQuarantinedNotFatal(t *testing.T) {
 			os.WriteFile(Path(root), bytes.Join(lines, nil), 0o600)
 			open(t, root)
 			evs := readAll(t, root)
-			if last := evs[len(evs)-1]; last.Type != "log.quarantined" || last.Seq != 4 || string(last.Data) != c.want {
-				t.Fatalf("events %s, last data %s; want seq 4 quarantining %s", types(evs), last.Data, c.want)
+			q := evs[len(evs)-2] // the open that quarantined it announces itself after
+			if q.Type != "log.quarantined" || q.Seq != 6 || string(q.Data) != c.want {
+				t.Fatalf("events %s, quarantine data %s; want seq 6 quarantining %s", types(evs), q.Data, c.want)
 			}
 			if err := Verify(Path(root)); err != nil {
 				t.Fatal(err)
@@ -279,7 +283,7 @@ func TestInvalidKnownEventIsQuarantinedAndSkippedByTheFold(t *testing.T) {
 	os.WriteFile(Path(root), []byte(line), 0o600)
 	open(t, root)
 	evs := readAll(t, root)
-	if got := types(evs); got != "3:log.quarantined" {
+	if got := types(evs); got != "3:log.quarantined 4:home.opened" {
 		t.Fatalf("events: %s, want only the quarantine of seq 1 (the unknown type is skipped, not quarantined)", got)
 	}
 	if !strings.Contains(string(evs[0].Data), `missing required data field \"corpus_sha\"`) {
@@ -347,12 +351,15 @@ func TestConcurrentAppendsInterleaveNothingAndLoseNothing(t *testing.T) {
 		if err := json.Unmarshal(line, &e); err != nil || e.Seq != int64(i+1) || check(&e) != nil {
 			t.Fatalf("line %d is not event seq %d: %v %s", i+1, i+1, err, line)
 		}
-		var r BenchRun
-		json.Unmarshal(e.Data, &r)
-		tasks[r.Task] = true
+		if e.Type == "bench.run" {
+			var r BenchRun
+			json.Unmarshal(e.Data, &r)
+			tasks[r.Task] = true
+		}
 	}
-	if len(lines) != writers*each || len(returned) != writers*each || len(tasks) != writers*each {
-		t.Fatalf("%d lines, %d distinct seqs returned, %d distinct tasks; want %d of each", len(lines), len(returned), len(tasks), writers*each)
+	// Line 1 is this process's home.opened, which no writer appended.
+	if len(lines) != writers*each+1 || len(returned) != writers*each || len(tasks) != writers*each {
+		t.Fatalf("%d lines, %d distinct seqs returned, %d distinct tasks; want %d appends over one home.opened", len(lines), len(returned), len(tasks), writers*each)
 	}
 	if err := Verify(Path(root)); err != nil {
 		t.Fatal(err)
@@ -478,11 +485,11 @@ func TestOtherProcessHoldingTheLockRefusesThenDiesAndIsTakenOver(t *testing.T) {
 	l := open(t, root)
 	mustAppend(t, l, run("v1", "parent", "defect", "m", 1))
 	evs := readAll(t, root)
-	if got := types(evs); got != "1:bench.run 2:home.lock_taken 3:bench.run" {
+	if got := types(evs); got != "1:home.opened 2:bench.run 3:home.lock_taken 4:home.opened 5:bench.run" {
 		t.Fatalf("events: %s", got)
 	}
-	if !strings.HasPrefix(string(evs[1].Data), fmt.Sprintf(`{"stale_pid":%d,"stale_started_at":"`, child.Process.Pid)) {
-		t.Fatalf("lock_taken data %s", evs[1].Data)
+	if !strings.HasPrefix(string(evs[2].Data), fmt.Sprintf(`{"stale_pid":%d,"stale_started_at":"`, child.Process.Pid)) {
+		t.Fatalf("lock_taken data %s", evs[2].Data)
 	}
 }
 
@@ -512,4 +519,81 @@ func TestKillMidAppendLosesNoCompleteEvent(t *testing.T) {
 		t.Fatalf("only %d events after five killed writers", len(evs))
 	}
 	t.Logf("%d events across five SIGKILLed writers, gapless", len(evs))
+}
+
+// homePID decodes the pid a home.opened or home.closed names.
+func homePID(e Event) int {
+	var d struct {
+		PID int `json:"pid"`
+	}
+	json.Unmarshal(e.Data, &d)
+	return d.PID
+}
+
+// unpairedOpens returns the pid of every home.opened no home.closed named, which is
+// exactly the unclean-exit condition a reconcile reads (critique c8 F5).
+func unpairedOpens(evs []Event) []int {
+	open := map[int64]int{} // seq of a home.opened -> its pid
+	for _, e := range evs {
+		switch e.Type {
+		case "home.opened":
+			open[e.Seq] = homePID(e)
+		case "home.closed":
+			var d struct {
+				OpenedSeq int64 `json:"opened_seq"`
+			}
+			json.Unmarshal(e.Data, &d)
+			delete(open, d.OpenedSeq)
+		}
+	}
+	var pids []int
+	for _, seq := range slices.Sorted(maps.Keys(open)) {
+		pids = append(pids, open[seq])
+	}
+	return pids
+}
+
+// A killed writer leaves a home.opened its home.closed never paired; a clean exit
+// leaves the pair. That difference is what a later reconcile has to read to know a
+// home was left with work in it (critique c8 F5).
+func TestHomeOpenedIsPairedByHomeClosedOnlyOnACleanExit(t *testing.T) {
+	root := testenv.Isolate(t)
+	child := startHelper(t, root, "hold")
+	child.Process.Signal(syscall.SIGKILL)
+	child.Wait()
+	if got := unpairedOpens(readAll(t, root)); len(got) != 1 || got[0] != child.Process.Pid {
+		t.Fatalf("after SIGKILL the unpaired opens are %v, want just the killed pid %d\nevents: %s",
+			got, child.Process.Pid, types(readAll(t, root)))
+	}
+	l, err := Open(root, clock(time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAppend(t, l, run("v1", "parent", "defect", "m", 1))
+	if got := unpairedOpens(readAll(t, root)); len(got) != 2 {
+		t.Fatalf("a live writer over an unclean home has unpaired opens %v, want the dead one and its own", got)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got := unpairedOpens(readAll(t, root))
+	if len(got) != 1 || got[0] != child.Process.Pid {
+		t.Fatalf("after a clean Close the unpaired opens are %v, want only the killed pid %d\nevents: %s",
+			got, child.Process.Pid, types(readAll(t, root)))
+	}
+	t.Logf("events: %s", types(readAll(t, root)))
+}
+
+// The catalogue is closed, so a new type is a change to a5 section 2.3 and to this list
+// in the same commit; the count is the number the successor critique reads against.
+func TestCatalogueIsTheClosedListItDeclares(t *testing.T) {
+	testenv.Isolate(t)
+	want := []string{
+		"bench.estimate", "bench.probe", "bench.refused", "bench.run", "bench.verdict",
+		"bench.verified", "home.closed", "home.lock_taken", "home.opened",
+		"log.quarantined", "log.repaired",
+	}
+	if got := slices.Sorted(maps.Keys(catalogue)); !slices.Equal(got, want) {
+		t.Fatalf("the catalogue holds %d types\n%v\nwant %d\n%v", len(got), got, len(want), want)
+	}
 }

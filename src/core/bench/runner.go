@@ -646,6 +646,28 @@ func Probe(ctx context.Context, cfg Config, armName, taskID string, isolated boo
 	return nil
 }
 
+// admit runs the controls that gate a launch and records the first refusal, so a run
+// refused for the state of its machine leaves an event and not only a printed line
+// (p8 R39). Load is read first because a machine loaded enough to be refused is also
+// what makes node slow enough to start to trip the clock's slack, and the load reading
+// is the cause the reader wants named.
+func (s *session) admit(ctx context.Context, w *workspace, env []string, load *float64, errLog io.Writer) error {
+	control, err := "load", loadControl(load, s.profile.MaxLoadAtStart)
+	if err == nil {
+		control, err = "clock", clockControl(ctx, env, w.repo, w.at)
+	}
+	if err == nil {
+		return nil
+	}
+	fmt.Fprintln(errLog, err)
+	d := log.BenchRefused{Corpus: s.Corpus, Run: w.id, Control: control, Reason: err.Error(), LoadAtStart: load, MaxLoad: s.profile.MaxLoadAtStart}
+	seq, aerr := s.log.Append(log.Entry{Type: "bench.refused", Actor: "bench", Data: d})
+	if aerr != nil {
+		return aerr
+	}
+	return refusef("task run %s: %v, so no worker launched (seq %d)", w.id, err, seq)
+}
+
 // launch runs the harness headless in the workspace, under clock, and reads its transcript.
 func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD float64, iso *Isolation, prompt string, clock []string) (*Reading, Observed, error) {
 	if err := os.WriteFile(filepath.Join(w.record, "prompt.md"), []byte(prompt), 0o600); err != nil {
@@ -663,9 +685,9 @@ func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD floa
 	}
 	defer errLog.Close()
 	env := append(s.env(w), clock...)
-	if err := clockControl(ctx, env, w.repo, w.at); err != nil {
-		fmt.Fprintln(errLog, err)
-		return nil, Observed{}, refusef("task run %s: %v, so no worker launched (log %s)", w.id, err, errLog.Name())
+	load := loadAverage()
+	if err := s.admit(ctx, w, env, load, errLog); err != nil {
+		return nil, Observed{}, err
 	}
 
 	h := s.Adapters[arm.Adapter]
@@ -685,7 +707,7 @@ func (s *session) launch(ctx context.Context, w *workspace, arm Arm, capUSD floa
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 10 * time.Second
-	obs := Observed{LoadAtStart: readLoadAverage()}
+	obs := Observed{LoadAtStart: load}
 	start := time.Now()
 	runErr := cmd.Run()
 	obs.WallMS = time.Since(start).Milliseconds()

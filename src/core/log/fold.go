@@ -98,6 +98,19 @@ type BenchEstimate struct {
 	CorpusTasks  int                `json:"corpus_tasks"`
 }
 
+// BenchRefused is bench.refused's data: the control that refused a launch, the run it
+// refused, and the reason in the words the control printed. A reading whose control
+// fails is never a column (p8 R39), so the refusal is an event and not only a line on
+// stdout.
+type BenchRefused struct {
+	Corpus      string   `json:"corpus"`
+	Run         string   `json:"run"`     // the run's workspace id
+	Control     string   `json:"control"` // load or clock
+	Reason      string   `json:"reason"`
+	LoadAtStart *float64 `json:"load_at_start"`
+	MaxLoad     float64  `json:"max_load_at_start"`
+}
+
 // BenchVerified is bench.verified's data. TaskSHA is sha256 over the task's record and its
 // hidden check; it, Visible and the clock are optional so records written before them still
 // fold. ClockOffsetMS is what the landed hidden check's node clock was moved by.

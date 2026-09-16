@@ -31,7 +31,16 @@ trap '[ -n "${work:-}" ] && [ -d "$work" ] && rm -rf "$work"' EXIT
 echo "lane: $root on linux, go $go_version, via $docker"
 
 echo "--- cross-vet: GOOS=linux go vet ./..."
-packages=$(cd "$root" && go list ./... | wc -l | tr -d ' ')
+# go list's own exit code, not its line count: a toolchain that cannot read this tree at all
+# (an unwritable GOCACHE under a sandbox, a go.mod it refuses) prints nothing and is a lane
+# that never read Linux, which is exit 2 like a missing runtime. Zero packages from a go list
+# that succeeded is a different thing, and stays red.
+if ! list=$(cd "$root" && go list ./... 2> "$work/list.err"); then
+  echo "error: go list ./... could not read $root, so the lane read no Linux at all:" >&2
+  sed 's/^/  /' "$work/list.err" >&2
+  exit 2
+fi
+packages=$(printf '%s\n' "$list" | grep -c . || true)
 echo "examined=$packages packages"
 [ "$packages" -gt 0 ] || { echo "error: the cross-vet leg examined 0 packages" >&2; exit 1; }
 if ! (cd "$root" && GOOS=linux go vet ./...); then

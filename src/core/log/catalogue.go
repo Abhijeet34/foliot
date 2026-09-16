@@ -13,6 +13,14 @@ type entry struct {
 // 2.3 and to this package's tests in the same commit.
 var catalogue = map[string]entry{
 	"home.lock_taken": {actor: "orchestrator", required: []string{"stale_pid", "stale_started_at"}},
+	// home.opened and home.closed bracket one orchestrator process, and home.closed names
+	// the seq of its own home.opened: an unpaired open is an unclean exit, which is the
+	// condition reconcile reads before it probes what that process left behind. pid with
+	// started_at is the same pair home.lock stores, so a leftover lock file and its open
+	// identify the same process rather than a recycled pid. Both are synced, because the
+	// whole value of the pair is surviving the kill that leaves one unpaired.
+	"home.opened": {actor: "orchestrator", required: []string{"pid", "started_at"}, durable: true},
+	"home.closed": {actor: "orchestrator", required: []string{"pid", "opened_seq"}, durable: true},
 	// A repair has already moved bytes out of the log, so its record is synced even
 	// though a5 section 2.1 names no log.* type among the durability points.
 	"log.repaired":    {actor: "orchestrator", required: []string{"dropped_bytes", "moved_to"}, durable: true},
@@ -38,6 +46,12 @@ var catalogue = map[string]entry{
 	// with proven true in the same invocation (k3 section 1.3 item 1).
 	"bench.probe": {actor: "bench", required: []string{
 		"corpus", "task", "arm", "model", "isolation", "check_lines", "lines_seen", "denials", "proven", "cost_usd",
+	}, durable: true},
+	// bench.refused is a launch a control refused before any worker started: the run
+	// never happened, so it carries no run record, and without this row the refusal
+	// would exist only on stdout.
+	"bench.refused": {actor: "bench", required: []string{
+		"corpus", "run", "control", "reason",
 	}, durable: true},
 	// bench.estimate is the measured projection bench run reads before a sweep (p8 R15).
 	"bench.estimate": {actor: "bench", required: []string{
