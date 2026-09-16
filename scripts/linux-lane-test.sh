@@ -1,8 +1,10 @@
 #!/bin/sh
 # Proves scripts/linux-lane.sh goes red: a lane that cannot fail guards nothing, and the whole
-# point of this one is to fail on a change this macOS host calls green. Each case is a scratch
-# Go module the lane is pointed at, so the proof costs one small module per case and never the
-# project's own suite.
+# point of this one is to fail on a change a workstation calls green. Each case is a scratch Go
+# module the lane is pointed at, so the proof costs one small module per case and never the
+# project's own suite. It runs on the workstation and on the Linux runner, and nothing in it may
+# assume which of the two it is on; the one case whose answer depends on the host says so and
+# asserts both answers.
 set -eu
 
 lane=$(cd "$(dirname "$0")" && pwd -P)/linux-lane.sh
@@ -46,8 +48,8 @@ expect() {
 module clean
 expect 0 'linux lane green' 'a module that passes on both platforms is green'
 
-# The defect itself: green on this host, red on Linux. The host leg is asserted first, because
-# "the lane went red" only means something once this machine has called the same tree green.
+# The defect itself: a tree this host calls green that Linux calls red. The host leg is asserted
+# first, because "the lane went red" only means something once the host's own verdict is known.
 module linuxonly
 cat >> "$mod/lane_test.go" <<'EOF'
 
@@ -60,11 +62,27 @@ func TestPlatformAssumption(t *testing.T) {
 EOF
 sed -i.bak 's/^import "testing"$/import (\n\t"runtime"\n\t"testing"\n)/' "$mod/lane_test.go"
 rm -f "$mod/lane_test.go.bak"
+# What the host must say about this module is decided by what the host is, and asserting it
+# either way is what proves the lane reads Linux rather than the machine it was started on. A
+# darwin host calls it green, and that gap against the lane's red is the whole defect. A linux
+# host calls it red for the same reason the lane does, so there is no gap to read there, and
+# saying so is not the same as not checking: a darwin host that called it red, or a linux host
+# that called it green, would mean this fixture had stopped standing for a platform assumption.
 cases=$((cases + 1))
-if (cd "$mod" && go test ./... > "$scratch/host.out" 2>&1); then
-  echo "ok   the darwin-only module is green on this host, which is the defect"
+host_os=$(uname -s)
+host_rc=0
+(cd "$mod" && go test ./... > "$scratch/host.out" 2>&1) || host_rc=$?
+if [ "$host_os" = Darwin ]; then
+  want_rc=0
+  want="green on this $host_os host, which is the gap the lane exists to close"
 else
-  echo "FAIL the darwin-only module should be green on this host:"
+  want_rc=1
+  want="red on this $host_os host too, so there is no gap here for the lane to read"
+fi
+if [ "$host_rc" -eq "$want_rc" ]; then
+  echo "ok   the darwin-only module is $want"
+else
+  echo "FAIL the darwin-only module should be $want, but go test exited $host_rc:"
   sed 's/^/     /' "$scratch/host.out"
   failed=$((failed + 1))
 fi
