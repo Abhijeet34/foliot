@@ -697,7 +697,9 @@ func TestSweepDoesNotReuseAVerifiedRecordWithoutAClock(t *testing.T) {
 	}
 	l.Close()
 	r.out.Reset()
-	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}); err != nil {
+	// The first sweep verdicted this cell, so --no-resume is what still gives the second one
+	// a run to verify for; the subject here is the bench.verified record, not the resume.
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5, NoResume: true}); err != nil {
 		t.Fatalf("second Run: %v\n%s", err, r.out)
 	}
 	if !strings.Contains(r.out.String(), "0 tasks reused from bench.verified, 1 to verify") {
