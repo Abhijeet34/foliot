@@ -82,17 +82,23 @@ func (a Adapter) Launch(l bench.Launch) (bench.Command, error) {
 func settings(iso *bench.Isolation, home string, uid int) ([]byte, error) {
 	profileDir := filepath.Join(home, ".claude")
 	tmp := tmpEntries("/private/tmp", uid)
-	// The sandbox matches real paths, so an unresolved denied entry such as one under
-	// /tmp (a symlink to /private/tmp on stock macOS) would silently never match.
-	denyRead := append(append(append([]string{}, iso.DenyRead...), "/private/var/folders"), tmp...)
-	for i, p := range denyRead {
-		denyRead[i] = bench.RealPath(p)
-	}
+	// The sandbox matches real paths, so every path it is given is resolved, not only the
+	// denied ones: a root beneath /tmp (a symlink to /private/tmp on stock macOS) renders a
+	// write grant that never matches the worker's own checkout, and the worker then cannot
+	// write in the one directory it owns.
+	denyRead := realPaths(append(append([]string{}, iso.DenyRead...), append([]string{"/private/var/folders"}, tmp...)...))
+	allowRead, allowWrite := realPaths(iso.AllowRead), realPaths([]string{iso.Run})
 	var rules []string
-	for _, p := range append(append([]string{}, iso.ToolDeny...), tmp...) {
+	// A tool rule matches the path the tool was asked for, which the sandbox's resolution
+	// does not reach, so a denied tree is named in both spellings.
+	toolDeny := append(append([]string{}, iso.ToolDeny...), tmp...)
+	for _, p := range dedupe(append(toolDeny, realPaths(toolDeny)...)) {
 		rules = append(rules, "Read(/"+p+"/**)", "Edit(/"+p+"/**)")
 	}
-	rules = append(rules, "Edit(/"+profileDir+"/**)",
+	for _, p := range dedupe([]string{profileDir, bench.RealPath(profileDir)}) {
+		rules = append(rules, "Edit(/"+p+"/**)")
+	}
+	rules = append(rules,
 		// WebFetch and WebSearch run in-process, outside the sandbox's network proxy, and
 		// would fetch the public landed patch (Fable critique k3 section 1.2 path 1).
 		"WebFetch", "WebSearch")
@@ -106,9 +112,9 @@ func settings(iso *bench.Isolation, home string, uid int) ([]byte, error) {
 			"filesystem": map[string]any{
 				// /private/var/folders holds every macOS per-user temp directory.
 				"denyRead":   denyRead,
-				"allowRead":  iso.AllowRead,
-				"allowWrite": []string{iso.Run},
-				"denyWrite":  []string{profileDir},
+				"allowRead":  allowRead,
+				"allowWrite": allowWrite,
+				"denyWrite":  realPaths([]string{profileDir}),
 			},
 			// The visible suite runs offline once setup has run, so a sandboxed command needs
 			// no host; the harness's own API traffic is in-process and not proxied.
@@ -121,6 +127,27 @@ func settings(iso *bench.Isolation, home string, uid int) ([]byte, error) {
 		"permissions": map[string]any{"deny": rules, "defaultMode": "acceptEdits"},
 	}
 	return json.MarshalIndent(s, "", "  ")
+}
+
+// realPaths resolves every path to its real, symlink-free form, dropping duplicates two
+// spellings collapse into.
+func realPaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, bench.RealPath(p))
+	}
+	return dedupe(out)
+}
+
+func dedupe(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	out := paths[:0:0]
+	for _, p := range paths {
+		if !seen[p] {
+			seen[p], out = true, append(out, p)
+		}
+	}
+	return out
 }
 
 // tmpEntries is every entry of the shared temporary directory except the harness's own

@@ -98,7 +98,7 @@ func TestLaunchWritesTheRunProfileOnlyWhenIsolated(t *testing.T) {
 	sb := s.Sandbox
 	if !sb.Enabled || !sb.FailIfUnavailable || sb.AllowUnsandboxedCommands || !sb.Network.StrictAllowlist || len(sb.Network.AllowedDomains) != 0 ||
 		!slices.Contains(sb.Filesystem.DenyRead, "/root") || !slices.Contains(sb.Filesystem.DenyRead, "/private/var/folders") ||
-		!slices.Contains(sb.Filesystem.AllowRead, run) || !slices.Contains(sb.Filesystem.DenyWrite, filepath.Join(home, ".claude")) ||
+		!slices.Contains(sb.Filesystem.AllowRead, bench.RealPath(run)) || !slices.Contains(sb.Filesystem.DenyWrite, bench.RealPath(filepath.Join(home, ".claude"))) ||
 		len(sb.Credentials.EnvVars) != 1 || sb.Credentials.EnvVars[0].Name != "CLAUDE_CODE_OAUTH_TOKEN" {
 		t.Fatalf("sandbox %+v", sb)
 	}
@@ -113,5 +113,64 @@ func TestLaunchWritesTheRunProfileOnlyWhenIsolated(t *testing.T) {
 	cmd, _ = Adapter{Binary: "/bin/claude"}.Launch(l)
 	if _, err := os.Stat(filepath.Join(l.Home, ".claude", "settings.json")); err == nil || !strings.Contains(strings.Join(cmd.Argv, " "), "--permission-mode bypassPermissions") {
 		t.Fatalf("an unisolated launch wrote a profile or kept prompts: %q", cmd.Argv)
+	}
+}
+
+// TestRunProfileResolvesEverySandboxPath is the portable half of the /tmp-root regression:
+// where sandbox-exec cannot be applied (inside another sandbox, or off macOS) the kernel
+// verdict in sandbox_darwin_test.go is skipped, and this asserts the same property on the
+// rendered profile - every sandbox path, not only denyRead, carries its resolved real form.
+func TestRunProfileResolvesEverySandboxPath(t *testing.T) {
+	testenv.Isolate(t)
+	root, err := os.MkdirTemp("/tmp", "foliot-tmp-root-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(root)
+	real := bench.RealPath(root)
+	if real == root {
+		t.Skip("/tmp is not a symlink on this machine")
+	}
+	run := filepath.Join(root, "bench", "work", "t.arm.r1")
+	if err := os.MkdirAll(run, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realRun := bench.RealPath(run)
+
+	home := filepath.Join(t.TempDir(), "home")
+	iso := &bench.Isolation{Run: run, DenyRead: []string{root}, AllowRead: []string{run}, ToolDeny: []string{filepath.Join(root, "bench", "checks")}}
+	if _, err := (Adapter{Binary: "/bin/claude"}).Launch(bench.Launch{
+		Home: home, Tmp: filepath.Join(home, "tmp"), Model: "claude-opus-5", CapUSD: 1, Prompt: "p", Credential: "tok", Isolation: iso,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s struct {
+		Sandbox struct {
+			Filesystem struct{ DenyRead, AllowRead, AllowWrite, DenyWrite []string }
+		}
+		Permissions struct{ Deny []string }
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatal(err)
+	}
+	fs := s.Sandbox.Filesystem
+	if !slices.Contains(fs.AllowWrite, realRun) {
+		t.Errorf("allowWrite %v lacks the resolved run %s: a worker cannot write inside its own checkout", fs.AllowWrite, realRun)
+	}
+	if !slices.Contains(fs.AllowRead, realRun) {
+		t.Errorf("allowRead %v lacks the resolved run %s", fs.AllowRead, realRun)
+	}
+	if !slices.Contains(fs.DenyRead, real) {
+		t.Errorf("denyRead %v lacks the resolved root %s", fs.DenyRead, real)
+	}
+	// A tool rule matches the path as written, so both spellings of a denied tree are denied.
+	for _, want := range []string{"Read(/" + filepath.Join(root, "bench", "checks") + "/**)", "Read(/" + filepath.Join(real, "bench", "checks") + "/**)"} {
+		if !slices.Contains(s.Permissions.Deny, want) {
+			t.Errorf("permissions.deny lacks %s", want)
+		}
 	}
 }
