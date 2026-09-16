@@ -58,6 +58,7 @@ Only then does it ask the first arm to print a hidden check, fetch the landed pa
 Every column comes from the harness's own stream: tokens, cost, wall time, how the run ended and how it was billed.
 The hidden check then runs on `base_sha` plus the worker's changes, in a tree the worker never touched.
 `bench run` refuses before the first run when the per-run caps sum over `--budget-usd` and no `bench estimate` projects the sweep inside it; the probe's own cost counts against the budget too, each run starts only when its cap still fits within what remains, and the sweep stops when the subscription's weekly window reads 80 percent used.
+A run of the same corpus sha, task, arm, model and repeat that already carries a `bench.verdict` is not planned again, so a sweep interrupted partway through resumes at the next run rather than paying for the finished ones twice; `--no-resume` plans every run again.
 `bench report` prints one row per arm and per class with each column's spread, and refuses any row that rests on zero runs.
 
 An isolation claim is only as good as the probe that failed to break it.
