@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -207,13 +208,17 @@ func TestRunProvesIsolationThenScoresEachArmFromTheStream(t *testing.T) {
 			t.Errorf("report lacks %q", want)
 		}
 	}
-	// A second sweep at the same corpus sha reuses the recorded verification.
+	// A second sweep at the same corpus sha reuses the recorded verification, and the run
+	// the first sweep already verdicted is not planned again.
 	r.out.Reset()
-	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 10, CapUSD: 1}); err != nil {
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 2, BudgetUSD: 10, CapUSD: 1}); err != nil {
 		t.Fatalf("second Run: %v\n%s", err, r.out)
 	}
 	if !strings.Contains(r.out.String(), "1 tasks reused from bench.verified, 0 to verify") || strings.Contains(r.out.String(), "task=calc-add class=defect") {
 		t.Fatalf("the second sweep verified again:\n%s", r.out)
+	}
+	if !strings.Contains(r.out.String(), "plan: runs=1 reused=1 arms=idle") {
+		t.Fatalf("the second sweep planned the verdicted run again:\n%s", r.out)
 	}
 	rep.Reset()
 	err = Report(ReportOptions{Root: r.root, Corpus: "v1", Arms: []string{"idle", "ceiling"}, Out: &rep})
@@ -374,10 +379,10 @@ func TestEstimateRecordsAProjectionRunReads(t *testing.T) {
 	defer s.close()
 	tasks, _ := s.selectTasks(nil)
 	a, _ := s.profile.ParseArms("idle")
-	if p, basis, err := s.projection(plan(a, tasks, 3, 0), a, 1, 3, 1); err != nil || basis != "estimate" || p != 0.75 {
+	if p, basis, err := s.projection(plan(a, tasks, 3, 0), a, 1); err != nil || basis != "estimate" || p != 0.75 {
 		t.Fatalf("projection %v %s %v", p, basis, err)
 	}
-	if _, _, err := s.projection(plan(a, tasks, 3, 0), a, 1, 3, 0.5); !errors.Is(err, ErrRefused) {
+	if _, _, err := s.projection(plan(a, tasks, 3, 0), a, 0.5); !errors.Is(err, ErrRefused) {
 		t.Fatalf("a projection over budget: %v", err)
 	}
 }
@@ -692,7 +697,9 @@ func TestSweepDoesNotReuseAVerifiedRecordWithoutAClock(t *testing.T) {
 	}
 	l.Close()
 	r.out.Reset()
-	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5}); err != nil {
+	// The first sweep verdicted this cell, so --no-resume is what still gives the second one
+	// a run to verify for; the subject here is the bench.verified record, not the resume.
+	if err := Run(context.Background(), r.cfg, SweepOptions{Arms: "idle", Repeats: 1, BudgetUSD: 5, NoResume: true}); err != nil {
 		t.Fatalf("second Run: %v\n%s", err, r.out)
 	}
 	if !strings.Contains(r.out.String(), "0 tasks reused from bench.verified, 1 to verify") {
@@ -759,5 +766,186 @@ func TestRunPinsTheWorkerAndTheCheck(t *testing.T) {
 	}
 	if !strings.Contains(r.out.String(), "clock_seen=2025-06-02T") {
 		t.Errorf("the probe did not read the pinned clock:\n%s", r.out)
+	}
+}
+
+// cancelAfter cancels once the runner has printed n lines starting with prefix, so the
+// sweep stops at a point the test names rather than at a time it guesses.
+type cancelAfter struct {
+	out    io.Writer
+	prefix string
+	n      int
+	cancel func()
+}
+
+func (c *cancelAfter) Write(p []byte) (int, error) {
+	n, err := c.out.Write(p)
+	for _, line := range strings.Split(string(p), "\n") {
+		if strings.HasPrefix(line, c.prefix) {
+			if c.n--; c.n == 0 {
+				c.cancel()
+			}
+		}
+	}
+	return n, err
+}
+
+// countEvents counts raw log entries of a type, which is what proves nothing was run twice:
+// log.Runs collapses a re-run onto the cell it repeats, so its length cannot see one.
+func countEvents(t *testing.T, root, typ string) int {
+	t.Helper()
+	events, err := log.Read(log.Path(root), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range events {
+		if e.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
+// TestSweepResumesWhereAnInterruptedOneStopped is F1's acceptance test: a sweep stopped
+// after run N restarts at N+1, pays for none of the first N, and reports the run counts an
+// uninterrupted sweep would. The first sweep is stopped by cancelling its context between
+// two runs, which is where an orchestrator killed mid-sweep leaves the log.
+func TestSweepResumesWhereAnInterruptedOneStopped(t *testing.T) {
+	r := newRunnerFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r.cfg.Out = &cancelAfter{out: r.out, prefix: "run: seq=", n: 2, cancel: cancel}
+	opts := SweepOptions{Arms: "fixer,idle", Repeats: 3, BudgetUSD: 20, CapUSD: 1}
+
+	if err := Run(ctx, r.cfg, opts); err == nil {
+		t.Fatalf("the interrupted sweep returned no error\n%s", r.out)
+	}
+	t.Logf("interrupted sweep:\n%s", r.out)
+	if got := countEvents(t, r.root, "bench.verdict"); got != 2 {
+		t.Fatalf("the interrupted sweep left %d verdicts, want 2\n%s", got, r.out)
+	}
+	if got := countEvents(t, r.root, "bench.run"); got != 2 {
+		t.Fatalf("the interrupted sweep left %d bench.run records, want 2\n%s", got, r.out)
+	}
+	stopped := r.launched() // the probe plus two runs
+
+	r.out.Reset()
+	r.cfg.Out = r.out
+	if err := Run(context.Background(), r.cfg, opts); err != nil {
+		t.Fatalf("the resumed sweep: %v\n%s", err, r.out)
+	}
+	t.Logf("resumed sweep:\n%s", r.out)
+	if !strings.Contains(r.out.String(), "plan: runs=4 reused=2 arms=fixer,idle") {
+		t.Fatalf("the resumed sweep did not plan the four runs that remain:\n%s", r.out)
+	}
+	if got := countEvents(t, r.root, "bench.run"); got != 6 {
+		t.Fatalf("%d bench.run records over both sweeps, want the 6 of one cross product", got)
+	}
+	// Spend: one probe plus four runs, never the two the first sweep already paid for.
+	if got := r.launched() - stopped; got != 5 {
+		t.Fatalf("the resumed sweep launched %d harness processes, want the probe and four runs", got)
+	}
+
+	var rep bytes.Buffer
+	if err := Report(ReportOptions{Root: r.root, Corpus: "v1", Out: &rep}); err != nil {
+		t.Fatalf("Report: %v\n%s", err, rep.String())
+	}
+	t.Logf("bench report over the resumed sweep:\n%s", rep.String())
+	for _, want := range []string{"fixer all n=3 pass_rate=1", "idle defect(gating) n=3 pass_rate=0"} {
+		if !strings.Contains(rep.String(), want) {
+			t.Errorf("the report over a resumed sweep lacks %q, which an uninterrupted one carries", want)
+		}
+	}
+
+	// A third invocation of the same sweep has nothing left to run and pays for no probe.
+	r.out.Reset()
+	done := r.launched()
+	if err := Run(context.Background(), r.cfg, opts); err != nil {
+		t.Fatalf("the completed sweep: %v\n%s", err, r.out)
+	}
+	if !strings.Contains(r.out.String(), "plan: runs=0 reused=6") || !strings.Contains(r.out.String(), "already carries a verdict; nothing to run") {
+		t.Fatalf("a completed sweep did not say so:\n%s", r.out)
+	}
+	if r.launched() != done {
+		t.Fatalf("a completed sweep launched %d harness processes, want none", r.launched()-done)
+	}
+
+	// --no-resume is the escape for what the corpus sha and the model do not see.
+	r.out.Reset()
+	forced := opts
+	forced.NoResume = true
+	forced.Repeats = 1
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	r.cfg.Out = &cancelAfter{out: r.out, prefix: "run: seq=", n: 1, cancel: cancel2}
+	if err := Run(ctx2, r.cfg, forced); err == nil {
+		t.Fatalf("--no-resume: %s", r.out)
+	}
+	if !strings.Contains(r.out.String(), "plan: runs=2 reused=0 arms=fixer,idle") {
+		t.Fatalf("--no-resume reused a verdict:\n%s", r.out)
+	}
+}
+
+// TestResumeReadsTheFoldAndNotASecondBookkeepingFile covers the states the end-to-end case
+// cannot reach cheaply: a run whose verdict never arrived, a corpus that moved, and a
+// corpus with uncommitted changes its sha cannot see.
+func TestResumeReadsTheFoldAndNotASecondBookkeepingFile(t *testing.T) {
+	r := newRunnerFixture(t)
+	s, err := open(r.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.close()
+	tasks, _ := s.selectTasks(nil)
+	arms, _ := s.profile.ParseArms("fixer,idle")
+	sha, dirty := corpusVersion(filepath.Join(r.root, "bench"))
+	if dirty {
+		t.Fatalf("the fixture corpus reads dirty at %s", sha)
+	}
+	// One verdicted run, one run whose verdict never arrived, and one verdict superseded by
+	// a re-run that did not finish: the fold keys all three by (corpus, task, arm, repeat).
+	record := func(arm, model string, repeat int, verdict bool) {
+		seq, err := s.log.Append(log.Entry{Type: "bench.run", Actor: "bench", Data: log.BenchRun{
+			Corpus: "v1", CorpusSHA: sha, Task: "calc-add", Class: "defect", Arm: arm, Model: model, Repeat: repeat}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if verdict {
+			if _, err := s.log.Append(log.Entry{Type: "bench.verdict", Actor: "bench", Cause: &seq, Data: log.BenchVerdict{
+				Corpus: "v1", Task: "calc-add", Arm: arm, Repeat: repeat, Pass: true}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	record("fixer", "fixer-model", 1, true)
+	record("fixer", "fixer-model", 2, false)
+	record("idle", "idle-model", 1, true)
+	record("idle", "idle-model", 1, false) // supersedes the verdict above
+
+	left := func() []string {
+		runs, _, err := s.resume(plan(arms, tasks, 2, 0), tasks)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, x := range runs {
+			out = append(out, fmt.Sprintf("%s/%d", x.arm.Name, x.repeat))
+		}
+		return out
+	}
+	if got := strings.Join(left(), ","); got != "fixer/2,idle/1,idle/2" {
+		t.Fatalf("resume left %q; the verdicted fixer/1 is done and the superseded idle/1 is not", got)
+	}
+	// An arm repointed at another model under the same name is a change no corpus sha sees.
+	arms[0].Model = "other-model"
+	if got := strings.Join(left(), ","); got != "fixer/1,fixer/2,idle/1,idle/2" {
+		t.Fatalf("resume reused a verdict from another model: %q", got)
+	}
+	arms[0].Model = "fixer-model"
+	// A corpus with uncommitted changes carries the sha of the commit it moved off.
+	write(t, filepath.Join(r.root, "bench", "checks", "calc-add", "check.sh"), goodCheck+"\n# moved\n")
+	if got := strings.Join(left(), ","); got != "fixer/1,fixer/2,idle/1,idle/2" {
+		t.Fatalf("resume reused a verdict under a dirty corpus: %q", got)
 	}
 }
