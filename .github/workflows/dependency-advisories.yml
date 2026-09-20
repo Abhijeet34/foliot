@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+# Reads this repository's open Dependabot alerts through automation's shared body. The design, and
+# the live red/green runs behind it, are in automation's .ci/shared-workflows.md, section
+# `shared-dependency-advisories.yml (2026-09-02)`.
+#
+# The weekly run is not redundant with the pull-request run: GitHub's advisory database changes
+# between commits, so a dependency clean on Monday can carry a high advisory on Thursday.
+name: dependency advisories
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: dependency-advisories-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# `vulnerability-alerts: read` has to be granted HERE. A called workflow can narrow the caller's
+# GITHUB_TOKEN but never widen it, so omitting it ends the run in startup_failure with only
+# GitHub's "workflow file issue" annotation (measured on automation run 33564327488).
+permissions:
+  contents: read
+  vulnerability-alerts: read
+
+jobs:
+  # @main with no digest pin on purpose: a change to the shared body is live here on the next run.
+  advisories:
+    uses: Abhijeet34/automation/.github/workflows/shared-dependency-advisories.yml@main
