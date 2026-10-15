@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Reads this repository's open Dependabot alerts through automation's shared body. The design, and
+# Reads this repository's open Dependabot alerts through gates' shared body. The design, and
 # the live red/green runs behind it, are in automation's .ci/shared-workflows.md, section
 # `shared-dependency-advisories.yml (2026-09-02)`.
 #
@@ -30,4 +30,4 @@ permissions:
 jobs:
   # @main with no digest pin on purpose: a change to the shared body is live here on the next run.
   advisories:
-    uses: Abhijeet34/automation/.github/workflows/shared-dependency-advisories.yml@main
+    uses: Abhijeet34/gates/.github/workflows/shared-dependency-advisories.yml@main
