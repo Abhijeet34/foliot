@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# Runs .github/gates.toml through gates' runner beside ci.yml and records what it decides. It is
+# its own file because `needs` reaches only jobs of the same file, so nothing here can turn
+# `checks` red; the design is gates' README.md, "The shadow job".
+name: gate shadow
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: gate-shadow-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  shadow:
+    # Pinned to a gates release commit; Dependabot moves the pin.
+    uses: Abhijeet34/gates/.github/workflows/shared-gate-shadow.yml@99048291edfeff0062eb60981f0955b701ee624a # v5
