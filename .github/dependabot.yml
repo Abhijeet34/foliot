@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Actions are pinned to commit SHAs in every workflow, which is only safe
+  # because something moves the pins. This is that something.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: scope
