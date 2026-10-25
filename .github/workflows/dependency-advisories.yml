@@ -28,6 +28,6 @@ permissions:
   vulnerability-alerts: read
 
 jobs:
-  # @main with no digest pin on purpose: a change to the shared body is live here on the next run.
+  # Pinned to a gates release commit; Dependabot moves the pin.
   advisories:
-    uses: Abhijeet34/gates/.github/workflows/shared-dependency-advisories.yml@main
+    uses: Abhijeet34/gates/.github/workflows/shared-dependency-advisories.yml@2d686fa31bf6f3aea8ef64721811676bae1fc8a5 # v4
