@@ -1,0 +1,21 @@
+# Gate registry, run in shadow by gate-shadow.yml. These rows are the slice of ci.yml's
+# `tree-guards` job, which needs only bash, git and python3; the go, lane and secret-scan jobs
+# need Go, a container or gitleaks and wait for a way to install tools.
+
+[[gate]]
+id = "tree-guard-proof"
+inputs = ["scripts/tree-guard.sh", "scripts/tree-guard-test.sh"]
+run = "sh scripts/tree-guard-test.sh"
+shadow_since = 2026-10-26
+
+[[gate]]
+id = "no-fork-identifier"
+inputs = ["**"]
+run = "sh scripts/tree-guard.sh .guard/fork-identifiers"
+shadow_since = 2026-10-26
+
+[[gate]]
+id = "no-former-name"
+inputs = ["**"]
+run = "sh scripts/tree-guard.sh .guard/former-name"
+shadow_since = 2026-10-26
