@@ -20,6 +20,17 @@ A proof of concept helps, and it is never required.
 
 If either date is going to slip, you are told before it passes.
 
+## Disclosure
+
+The fix and a description of the problem are published together, once there is something to update to.
+That happens within 90 days of the acknowledgement at the latest; if a fix needs longer, a new date is agreed with you before the 90 days run out.
+A problem that is already public is fixed in the open instead.
+
+## Good-faith research
+
+Research that stays within your own accounts and data, stops once the problem is shown, and is reported through the route above is welcome.
+Abhijeet Halder will not take or support legal action over it.
+
 ## Supported versions
 
 foliot has no release yet.

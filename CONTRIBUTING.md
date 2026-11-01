@@ -1,6 +1,6 @@
 # Contributing to foliot
 
-A planned orchestrator for coding agents.
+A planned orchestrator for coding agents: runs each task headless in its own worktree and decides done only from evidence the agent did not produce.
 
 foliot has one maintainer, Abhijeet Halder, and changes are proposed as pull requests against `main`.
 Open an issue before starting anything larger than a small fix.

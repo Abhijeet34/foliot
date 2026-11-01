@@ -1,24 +1,19 @@
 ## What this is for
 
-The problem this solves, and for whom.
-Link the issue if there is one.
+<!-- The problem this solves, and for whom. Link the issue if there is one. -->
 
 ## What changed
 
-The approach, and the alternative you turned down with the reason.
+<!-- The approach, and the alternative you turned down with the reason. -->
 
-## How it was tested
+## Test plan
 
-Paste the test runner's own output.
-For a change in behaviour, paste the run that failed before the change and the run that passes after it.
+<!-- The command you ran and its own output, pasted. For a change in behaviour, the run that failed before the change and the run that passes after it. -->
 
 ```text
 
 ```
 
-## Checklist
+## Tests removed or weakened
 
-- [ ] The checks `AGENTS.md` names pass on my machine.
-- [ ] Every commit message follows Conventional Commits.
-- [ ] No test that `main` has is removed, or this description names each one and says why.
-- [ ] No `Co-authored-by:` trailer names a tool or an agent.
+<!-- "None", or each test that main has and this change removes, skips or relaxes, with the reason. -->
