@@ -19,7 +19,23 @@ Everything below describes the design, not working software.
 [`AGENTS.md`](AGENTS.md) is the operating manual written for that design.
 Every `foliot` command it names is planned and does not exist yet, except `foliot replay --verify` and the `foliot bench` commands.
 
-## Verifying the benchmark corpus
+## Install: building from source
+
+`foliot` is written in Go 1.27 with no dependencies outside the standard library.
+
+```sh
+go vet ./...
+go test ./...
+go build -trimpath ./cmd/foliot
+```
+
+CI runs the suite on `ubuntu-24.04`, so on a macOS workstation run the Linux lane before opening a pull request; it needs a container runtime and takes a few minutes.
+
+```sh
+sh scripts/linux-lane.sh
+```
+
+## Usage: verifying the benchmark corpus
 
 The corpus lives outside this repository, under `$FOLIOT_HOME/bench/`: one `corpus/<name>/<task>/task.json` per task and one hidden check at `checks/<task>/check.sh`.
 Keeping the checks out of the tree is what lets a worker be benchmarked against a test it has never seen.
@@ -64,22 +80,6 @@ A run of the same corpus sha, task, arm, model and repeat that already carries a
 
 An isolation claim is only as good as the probe that failed to break it.
 
-## Building
-
-`foliot` is written in Go 1.27 with no dependencies outside the standard library.
-
-```sh
-go vet ./...
-go test ./...
-go build -trimpath ./cmd/foliot
-```
-
-CI runs the suite on `ubuntu-24.04`, so on a macOS workstation run the Linux lane before opening a pull request; it needs a container runtime and takes a few minutes.
-
-```sh
-sh scripts/linux-lane.sh
-```
-
 ## Contributing, security and support
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) says how to propose a change and what every pull request needs, and [`AGENTS.md`](AGENTS.md) holds this project's own rules.
@@ -87,7 +87,7 @@ Report a vulnerability privately, never in an issue: [`SECURITY.md`](SECURITY.md
 [`SUPPORT.md`](SUPPORT.md) says where a bug report, a feature request or a question goes.
 Everyone taking part is held to the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
-## License
+## Licence
 
 Apache License 2.0, in [`LICENSE`](LICENSE), with the attribution in [`NOTICE`](NOTICE).
 Third-party components are listed in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md); there are none yet.
