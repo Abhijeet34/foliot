@@ -37,4 +37,3 @@ A vulnerability is never reported in a pull request or anywhere public.
 
 foliot is licensed under the Apache License 2.0, and section 5 of that licence covers what you submit: a contribution is accepted under the same terms.
 `LICENSE` holds the full text and `NOTICE` the attribution.
-
