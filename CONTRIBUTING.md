@@ -1,6 +1,6 @@
 # Contributing to foliot
 
-A planned orchestrator for coding agents.
+A planned orchestrator for coding agents: runs each task headless in its own worktree and decides done only from evidence the agent did not produce.
 
 foliot has one maintainer, Abhijeet Halder, and changes are proposed as pull requests against `main`.
 Open an issue before starting anything larger than a small fix.
@@ -37,4 +37,3 @@ A vulnerability is never reported in a pull request or anywhere public.
 
 foliot is licensed under the Apache License 2.0, and section 5 of that licence covers what you submit: a contribution is accepted under the same terms.
 `LICENSE` holds the full text and `NOTICE` the attribution.
-

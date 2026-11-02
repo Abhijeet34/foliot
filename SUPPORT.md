@@ -10,7 +10,7 @@ Paste the output instead of describing it.
 
 ## A security problem
 
-Not in an issue.
+Not in a public issue.
 [SECURITY.md](SECURITY.md) gives the private route.
 
 ## Something it does not do yet
