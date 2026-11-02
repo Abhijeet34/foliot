@@ -1,2 +1,12 @@
-# The maintainer reviews every change to this repository.
-*       @Abhijeet34
+# The maintainer owns the paths that decide what a merge must pass: CI, hooks,
+# policy and the tree guards behind the required `tree guards` check.
+# .github/ruleset-main.json requires a code-owner review, so a change to one of
+# them cannot merge on an agent's tokens alone, while the rest merges on its
+# checks with no approval.
+/.github/                    @Abhijeet34
+/.ci/                        @Abhijeet34
+/.githooks/                  @Abhijeet34
+/policy/                     @Abhijeet34
+/.guard/                     @Abhijeet34
+/scripts/tree-guard.sh       @Abhijeet34
+/scripts/tree-guard-test.sh  @Abhijeet34
