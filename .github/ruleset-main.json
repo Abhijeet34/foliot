@@ -1,0 +1,60 @@
+{
+  "name": "main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "~DEFAULT_BRANCH"
+      ]
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "required_signatures"
+    },
+    {
+      "parameters": {
+        "allowed_merge_methods": [
+          "squash"
+        ],
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": true,
+        "require_extra_approval_for_unattributed_changes": true,
+        "require_last_push_approval": false,
+        "required_approving_review_count": 0,
+        "required_review_thread_resolution": false,
+        "required_reviewers": []
+      },
+      "type": "pull_request"
+    },
+    {
+      "parameters": {
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "checks",
+            "integration_id": 15368
+          },
+          {
+            "context": "secret scan",
+            "integration_id": 15368
+          },
+          {
+            "context": "tree guards",
+            "integration_id": 15368
+          }
+        ],
+        "strict_required_status_checks_policy": true
+      },
+      "type": "required_status_checks"
+    }
+  ]
+}
