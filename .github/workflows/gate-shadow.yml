@@ -21,4 +21,4 @@ permissions:
 jobs:
   shadow:
     # Pinned to a gates release commit; Dependabot moves the pin.
-    uses: Abhijeet34/gates/.github/workflows/shared-gate-shadow.yml@99048291edfeff0062eb60981f0955b701ee624a # v5
+    uses: Abhijeet34/gates/.github/workflows/shared-gate-shadow.yml@7c07f96851a21041ad9f1cd0915f2c3220686ce4 # v8
